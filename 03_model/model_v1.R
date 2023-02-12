@@ -1,5 +1,5 @@
 ############################################################
-# próbaaa
+
 # Data Challenge competition
 # Budapest, February 2023
 # Author: Team Bella Vita
