@@ -149,7 +149,7 @@ basic_numeric_vars <- c(
 # amenities <-  grep("^d_.*", names(data), value = TRUE) 
 
 #######################################################
-# predictors_1 <- c(basic_numeric_vars)
+predictors_1 <- c(basic_numeric_vars)
 predictors_1 <- colnames(data[,-c("home_win_flag", "draw_flag", "away_win_flag")])
 # predictors_2 <- c(basic_numeric_vars, log_numeric_vars)
 # predictors_3 <- c(basic_numeric_vars, log_numeric_vars, poly_numeric_vars)
@@ -170,19 +170,95 @@ train_control <- trainControl(
 
 #######################################################
 
-# AutoML model
+# Simple logistic regression
+# -------------------------------------------------
+set.seed(857)
+glm_model <- train(formula(paste0("home_win_flag ~", paste0(predictors_1, collapse = " + "))),
+                   method = "glm",
+                   data = data_train,
+                   trControl = train_control)
+
+# AUC on training setß
+glm_model
+varImp(glm_model)
+varimp <- varImp(glm_model)
+# compare model performance based on CV using AUC
+summary(glm_model)
+
+# the previously seen CV AUC
+auc_cv <- glm_model[["results"]][["ROC"]]
+message(paste0("AUC from CV: ", round(auc_cv, digits = 4)))
 
 
+# variable importance
+plot(varImp(glm_model[1:10]))
+
+# AUC on holdout set
+predicted_glm_holdout <- predict(glm_model, 
+                                 newdata = data_holdout, 
+                                 type = "prob")[["yes"]]
 
 
+prediction_holdout_glm <- prediction(predicted_glm_holdout, data_holdout$home_win_flag)
+auc_holdout_glm <- performance(prediction_holdout_glm, measure = "auc")@y.values[[1]]
+message(paste0("AUC on holdout set for GLM: ", round(auc_holdout_glm, digits = 4)))
+# -------------------------------------------------
 
+# gradient boosting
+# -------------------------------------------------
 
-
-
-
+library("xgboost")
 set.seed(19900829)
+tune_grid <- expand.grid(
+  nrounds = c(100),  # this is n_estimators in the python code above
+  max_depth = c(10),
+  colsample_bytree = seq(0.5, 0.9, length.out = 5),
+  ## The values below are default values in the sklearn-api. 
+  eta = 0.1,
+  gamma=0,
+  min_child_weight = 1,
+  subsample = 1
+)
+
+
+xgb <- train(
+  formula(paste0("home_win_flag ~", paste0(predictors_1, collapse = " + "))),
+  tuneLength = 1,
+  data = data_train, 
+  method = 'xgbTree',
+  na.action = na.omit,
+  # importance = 'permutation',
+  # mtry: cannot be more than the number of predictors 
+  tuneGrid = tune_grid,
+  trControl = train_control)
+
+xgb
+
+# Naive Bayes
+# -------------------------------------------------
+library("e1071")
+# Create a preprocessing pipeline
+# preprocess <- preProcess(data_train, method = c("center", "scale"))
+# 
+# # Apply the preprocessing to the training and testing sets
+# train_data_processed <- predict(preprocess, data_train)
+# test_data_processed <- predict(preprocess, data_holdout)
+
+# Define the control parameters for the train function
+ctrl <- trainControl(method = "repeatedcv", number = 10, repeats = 3, 
+                     classProbs = TRUE, summaryFunction = twoClassSummary)
+
+# Train the Naive Bayes model using the train function
+nb_model <- train(home_win_flag ~ ., data = data_train[,-c("away_win_flag", "draw_flag")], 
+                  method = "naive_bayes",
+                  trControl = ctrl, verbose = FALSE)
+
+# SVMß
+# -------------------------------------------------
 
 # rf_model_1
+# -------------------------------------------------
+set.seed(19900829)
 tune_grid <- expand.grid(
   .mtry = 3,
   .splitrule = "gini",
