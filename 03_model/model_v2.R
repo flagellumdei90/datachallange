@@ -202,6 +202,8 @@ predicted_glm_holdout <- predict(glm_model,
 prediction_holdout_glm <- prediction(predicted_glm_holdout, data_holdout$home_win_flag)
 auc_holdout_glm <- performance(prediction_holdout_glm, measure = "auc")@y.values[[1]]
 message(paste0("AUC on holdout set for GLM: ", round(auc_holdout_glm, digits = 4)))
+
+# a változószelekción még dolgozni kell: 1) domain knowledge, forward/backward/stepwise selection, lasso /ridge penalty
 # -------------------------------------------------
 
 # gradient boosting
@@ -253,8 +255,22 @@ nb_model <- train(home_win_flag ~ ., data = data_train[,-c("away_win_flag", "dra
                   method = "naive_bayes",
                   trControl = ctrl, verbose = FALSE)
 
-# SVMß
+nb_model
+
+# SVM
 # -------------------------------------------------
+
+
+# AutoML
+# -------------------------------------------------
+
+# K-Nearest Neighbors
+# -------------------------------------------------
+
+
+# other from tree.Rmd file, other GBM ...
+# -------------------------------------------------
+
 
 # rf_model_1
 # -------------------------------------------------
