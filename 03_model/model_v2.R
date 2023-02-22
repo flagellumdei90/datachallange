@@ -170,6 +170,40 @@ train_control <- trainControl(
 
 #######################################################
 
+# AutoML
+# -------------------------------------------------
+library(h2o)
+h2o.init()
+data_train_h2o <- as.h2o(data_train[,-c("away_win_flag", "draw_flag")])
+
+# Define the target variable
+target <- "home_win_flag"
+
+# Split data into training and validation sets
+splits <- h2o.splitFrame(data_train_h2o, ratios = 0.8, seed = 1234)
+train <- splits[[1]]
+valid <- splits[[2]]
+
+set.seed(857)
+# Run AutoML for 20 base models
+aml = h2o.automl(x = predictors_1, y = target,
+                 training_frame = train,
+                 validation_frame = valid,
+                 max_models = 20,
+                 seed = 1,
+                 max_runtime_secs = 20
+)
+
+
+# AutoML Leaderboard
+lb = aml@leaderboard
+lb
+
+# close h2o connection
+h2o.shutdown(prompt = F)
+
+
+
 # Simple logistic regression
 # -------------------------------------------------
 set.seed(857)
@@ -191,7 +225,7 @@ message(paste0("AUC from CV: ", round(auc_cv, digits = 4)))
 
 
 # variable importance
-plot(varImp(glm_model[1:10]))
+plot(varImp(glm_model))
 
 # AUC on holdout set
 predicted_glm_holdout <- predict(glm_model, 
@@ -206,7 +240,7 @@ message(paste0("AUC on holdout set for GLM: ", round(auc_holdout_glm, digits = 4
 # a változószelekción még dolgozni kell: 1) domain knowledge, forward/backward/stepwise selection, lasso /ridge penalty
 # -------------------------------------------------
 
-# gradient boosting
+# Extreme Gradient Boosting
 # -------------------------------------------------
 
 library("xgboost")
@@ -236,6 +270,30 @@ xgb <- train(
 
 xgb
 
+# A celebrated implementation of the gradient boosting idea. 
+# _"Both xgboost and gbm follows the principle of gradient boosting. There are however, the difference in modeling details. Specifically, xgboost used a more regularized model formalization to control over-fitting, which gives it better performance."_
+
+# Simple Gradient Boosting Machine
+# -------------------------------------------------
+# library("gmb")
+gbm_grid <- expand.grid(n.trees = 100, 
+                        interaction.depth = c(5), 
+                        shrinkage = c(0.005),
+                        n.minobsinnode = c(5))
+set.seed(857)
+gbm_model <- train(home_win_flag ~ ., data = data_train[ ,colnames(data_train) %in% c("home_win_flag", predictors_1), with=FALSE], 
+                   method = "gbm",
+                   trControl = train_control,
+                   tuneGrid = gbm_grid,
+                   bag.fraction = 0.8,
+                   verbose = FALSE # gbm by default prints too much output
+)
+
+
+gbm_model
+
+# ezt a data megadást a többi ML modellhez is!
+
 # Naive Bayes
 # -------------------------------------------------
 library("e1071")
@@ -251,25 +309,28 @@ ctrl <- trainControl(method = "repeatedcv", number = 10, repeats = 3,
                      classProbs = TRUE, summaryFunction = twoClassSummary)
 
 # Train the Naive Bayes model using the train function
-nb_model <- train(home_win_flag ~ ., data = data_train[,-c("away_win_flag", "draw_flag")], 
+nb_model <- train(formula(paste0("home_win_flag ~", paste0(predictors_1, collapse = " + "))),
+                  data = data_train,
                   method = "naive_bayes",
                   trControl = ctrl, verbose = FALSE)
 
 nb_model
 
+
+
+
 # SVM
 # -------------------------------------------------
 
 
-# AutoML
-# -------------------------------------------------
-
-# K-Nearest Neighbors
-# -------------------------------------------------
 
 
-# other from tree.Rmd file, other GBM ...
+
+# K-Nearest Neighbours
 # -------------------------------------------------
+
+
+
 
 
 # rf_model_1
@@ -370,6 +431,10 @@ ggplot(calibration_logit,aes(x = mean_actual, y = mean_predicted)) +
 
 brier <- RMSE(actual_vs_predicted_rf1[["predicted"]], actual_vs_predicted_rf1[["actual"]])^2
 message(paste0("Brier score: ", round(brier, digits = 4)))
+
+
+
+
 
 
 
