@@ -1,0 +1,405 @@
+---
+title: "Bayes - football prediction"
+output: html_notebook
+---
+
+
+BASIC SETUP
+```{r}
+# empty memory
+rm(list=ls())
+
+# KOMMENT: install library if not exist -> megoldani majd
+
+# Load libraries
+library("tidyverse") # imap function for roc curve
+library("data.table") # to use data in an efficient way
+library("readxl") # to read xlsx data
+library("caret") # to split data into train and holdput sets
+library("dplyr") # to append commands easier
+library("ROCR") # to evaluate model performance
+library("h2o") # for autoML, java is kell hozzá
+library("xgboost") # for extreme gradient boosting model
+library("e1071") # for Naive Bayes
+library("ranger") # for RF model
+library("kernlab") # for SVM
+library("mltools") # to calculate AUC manually
+library("glmnet") # for GLMNET model
+# library(ggplot2)
+# library(ggthemes)
+# library(grid)
+# library(lattice)
+# library(glmnet)
+# library("skimr") 
+# library(gridExtra)
+
+# Set the working directory
+dir <-  "/Users/attilagulyas/Documents/GitHub/DataChallenge2023/"
+
+#location folders
+data_in <- paste0(dir,"01_raw/")
+# func <- paste0(dir, "work/") - nem használt
+output <- paste0(dir, "04_output/")
+```
+
+LOAD DATA
+```{r}
+data <- as.data.table(read_excel(paste0(data_in, "competition_table.xlsx")))
+
+
+# BASIC STISTICS
+message(paste0("Döntetlen aránya: ", round(sum(data$draw_flag) / nrow(data), digits = 2)))
+message(paste0("Hazai győzelem aránya: ", round(sum(data$home_win_flag) / nrow(data), digits = 2)))
+message(paste0("Vendég győzelem aránya: ", round(sum(data$away_win_flag) / nrow(data), digits = 2)))
+```
+
+LABEL ENGINEERING
+```{r}
+data <- data %>%
+  mutate(home_win_flag = factor(ifelse(home_win_flag == 0, "no", "yes"), levels = c("no", "yes")))
+
+data <- data %>%
+  mutate(away_win_flag = factor(ifelse(away_win_flag == 0, "no", "yes"), levels = c("no", "yes")))
+
+data <- data %>%
+  mutate(draw_flag = factor(ifelse(draw_flag == 0, "no", "yes"), levels = c("no", "yes")))
+```
+
+CRETAE DUMMY VARIABLES
+```{r}
+# Create dummy values
+data$d_home_win_flag<- ifelse(data$home_win_flag == 'yes', 1, 0)
+```
+
+FEATURE ENGINEERING
+```{r}
+# data structure
+# str(data)
+data <- data %>% mutate(
+        # hazai csapat támadás erőssége előző meccsen 
+        home_goal_per_shot_roll1 = home_team_goal_roll1_sum / home_team_shot_roll1_sum,
+        home_goal_per_shotontarget_roll1 = home_team_goal_roll1_sum / home_team_shot_on_target_roll1_sum,
+        home_shotontarget_per_shots_roll1 = home_team_shot_on_target_roll1_sum / home_team_shot_roll1_sum,
+        # hazai csapat támadás erőssége előző 4 meccsen 
+        home_goal_per_shot_roll4 = home_team_goal_roll4_sum / home_team_shot_roll4_sum,
+        home_goal_per_shotontarget_roll4 = home_team_goal_roll4_sum / home_team_shot_on_target_roll4_sum,
+        home_shotontarget_per_shots_roll4 = home_team_shot_on_target_roll4_sum / home_team_shot_roll4_sum,
+        # vendég csapat támadás erőssége előző meccsen 
+        away_goal_per_shot_roll1 = away_team_goal_roll1_sum / away_team_shot_roll1_sum,
+        away_goal_per_shotontarget_roll1 = away_team_goal_roll1_sum / away_team_shot_on_target_roll1_sum,
+        away_shotontarget_per_shots_roll1 = away_team_shot_on_target_roll1_sum / away_team_shot_roll1_sum,
+        # vendég csapat támadás erőssége előző 4 meccsen 
+        away_goal_per_shot_roll4 = away_team_goal_roll4_sum / away_team_shot_roll4_sum,
+        away_goal_per_shotontarget_roll4 = away_team_goal_roll4_sum / away_team_shot_on_target_roll4_sum,
+        away_shotontarget_per_shots_roll4 = away_team_shot_on_target_roll4_sum / away_team_shot_roll4_sum,
+        
+        # hazai csapat védekezés erőssége előző meccsen 
+        home_opponents_goal_per_shot_roll1 = 
+          home_team_opponents_goal_roll1_sum / home_team_opponents_shot_roll1_sum,
+        home_opponents_goal_per_shotontarget_roll1 = 
+          home_team_opponents_goal_roll1_sum /     home_team_opponents_shot_on_target_roll1_sum,
+        home_opponents_shotontarget_per_shots_roll1 = 
+          home_team_opponents_shot_on_target_roll1_sum / home_team_opponents_shot_roll1_sum,
+        
+        # hazai csapat védekezés erőssége előző 4 meccsen 
+        home_opponents_goal_per_shot_roll4 = 
+          home_team_opponents_goal_roll4_sum / home_team_opponents_shot_roll4_sum,
+        home_opponents_goal_per_shotontarget_roll4 = 
+          home_team_opponents_goal_roll4_sum /     home_team_opponents_shot_on_target_roll4_sum,
+        home_opponents_shotontarget_per_shots_roll4 = 
+          home_team_opponents_shot_on_target_roll4_sum / home_team_opponents_shot_roll4_sum,
+        
+        # vendég csapat védekezés erőssége előző meccsen 
+        away_opponents_goal_per_shot_roll1 = 
+          away_team_opponents_goal_roll1_sum / away_team_opponents_shot_roll1_sum,
+        away_opponents_goal_per_shotontarget_roll1 = 
+          away_team_opponents_goal_roll1_sum /     away_team_opponents_shot_on_target_roll1_sum,
+        away_opponents_shotontarget_per_shots_roll1 = 
+          away_team_opponents_shot_on_target_roll1_sum / away_team_opponents_shot_roll1_sum,
+        
+        # vendég csapat védekezés erőssége előző 4 meccsen 
+        away_opponents_goal_per_shot_roll4 = 
+          away_team_opponents_goal_roll4_sum / away_team_opponents_shot_roll4_sum,
+        away_opponents_goal_per_shotontarget_roll4 = 
+          away_team_opponents_goal_roll4_sum /     away_team_opponents_shot_on_target_roll4_sum,
+        away_opponents_shotontarget_per_shots_roll4 = 
+          away_team_opponents_shot_on_target_roll4_sum / away_team_opponents_shot_roll4_sum
+)
+
+
+# nullás osztás miatti hibás értékek javítása
+data[,168:191] <- lapply(data[,168:191], function(x) {x[is.infinite(x)] <- 0; return(x)}) %>% as.data.table()
+data[,168:191] <- lapply(data[,168:191], function(x) {x[is.na(x)] <- 0; return(x)}) %>% as.data.table()
+```
+
+
+--------------------------------------
+MODEL FOR PREDICTING HOME WIN
+--------------------------------------
+
+Create training set and holdout set samples
+Megj: 80%os trainingsettel is kipróbálni!
+```{r}
+set.seed(1990)
+
+# smaller than usual training set so that models run faster
+train_indices <- createDataPartition(data$home_win_flag, p = 0.7, list = FALSE)
+data_train <- data[train_indices, ]
+
+data_holdout <- data[-train_indices, ]
+
+dim(data_train)
+dim(data_holdout)
+```
+
+Set evaluation rules
+Megj: 10-fold CV, repeated CV is megoldás lehet, kipróbálni
+```{r}
+train_control <- trainControl(
+  method = "cv", 
+  n = 5,
+  classProbs = TRUE, 
+  summaryFunction = twoClassSummary  # necessary!
+  
+)
+
+# MEGJ: repeated CV is egy megoldás
+
+# Define the control parameters for the train function
+# ctrl <- trainControl(method = "repeatedcv", number = 10, repeats = 3, 
+#                      classProbs = TRUE, summaryFunction = twoClassSummary)
+```
+
+Define variables
+```{r}
+# Basic numeric variables
+basic_numeric_vars <- c(
+  "odds_home_team_win",
+  "odds_away_team_win",
+  "odds_draw"
+) 
+
+# glmnet (elastic net penalized) based selection
+basic_numeric_vars_set2 <- c("odds_away_team_win", 
+                             "odds_home_team_win", 
+                             
+                             "home_team_expected_point_roll4_sum",
+                              "away_team_expected_point_roll4_sum",
+                              "away_team_expected_point_roll3_sum",
+                              "away_team_expected_point_mean", 
+                              
+                              "home_team_corner_roll4_sum", # ?
+                              "home_team_corner_roll3_sum", # ?
+                              "home_team_corner_roll2_sum", # ?
+                              "away_team_opponents_corner_roll4_sum", # ?
+                              "home_team_opponents_corner_roll2_sum", # ?
+                              
+                              "home_team_shot_roll2_sum", # ?
+                              "away_team_opponents_shot_roll1_sum",  # ?
+                              "away_team_opponents_shot_roll4_sum", # ?
+                              "away_team_opponents_shot_roll3_sum", # ?
+                              
+                              "away_team_opponents_shot_on_target_roll4_sum"
+                             )
+
+# xgb based selection
+basic_numeric_vars_set3 <- c("odds_away_team_win", 
+                             "odds_home_team_win", 
+                             "odds_draw",
+                             
+                             "odds_home_team_defeat_roll4_mean",
+                             "odds_home_team_defeat_roll3_mean", # human input
+                             "odds_home_team_defeat_roll2_mean",
+                             
+                             "odds_away_team_defeat_roll4_mean",
+                             "odds_away_team_defeat_roll3_mean", # human input
+                             "odds_away_team_defeat_roll2_mean", # human input
+                             
+                             "odds_away_team_win_roll4_mean",                  
+                             "odds_away_team_win_roll3_mean",
+                             
+                             "odds_home_team_win_roll4_mean", # human input
+                             "odds_home_team_win_roll3_mean",
+
+                              "odds_home_team_draw_roll4_mean",
+                             "odds_home_team_draw_roll3_mean", # human input
+                             "odds_away_team_draw_roll4_mean", # human input
+                             "odds_away_team_draw_roll3_mean",
+
+                              "away_team_expected_point_mean", 
+                             "home_team_expected_point_mean", # human input
+                              "home_team_corner_roll3_sum", # ?
+                              "away_team_corner_roll2_sum", # ?
+                              "away_team_opponents_corner_roll4_sum", # ?
+
+                             "home_team_shot_roll2_sum", # ?
+                             "home_team_shot_roll4_sum", # ?
+                             "home_shotontarget_per_shots_roll4",
+                             "away_team_opponents_shot_roll4_sum", # ?
+                             "away_team_opponents_shot_on_target_roll3_sum"
+
+                             )
+
+
+# random forest based selection
+basic_numeric_vars_set4 <- c("odds_away_team_win", 
+                             "odds_home_team_win", 
+                             "odds_draw",
+                             "odds_home_team_defeat_roll4_mean",
+                             "odds_home_team_defeat_roll3_mean",
+                             "odds_home_team_defeat_roll2_mean",
+                             "odds_away_team_defeat_roll1_mean",
+                             
+                             "odds_away_team_defeat_roll4_mean",
+                             "odds_away_team_defeat_roll3_mean",
+                             "odds_away_team_defeat_roll2_mean",
+                             
+                             "odds_home_team_win_roll4_mean",
+                             "odds_home_team_win_roll3_mean",
+                             "odds_home_team_win_roll2_mean",
+                             
+                             "odds_away_team_win_roll4_mean",
+                             "odds_away_team_win_roll3_mean",
+                             "odds_away_team_win_roll2_mean",
+                             
+                             "odds_away_team_draw_roll4_mean",
+                             
+                             "home_team_expected_point_roll4_sum",
+                             "away_team_expected_point_roll4_sum",  # human input
+                             "away_team_expected_point_mean", 
+                             "home_team_expected_point_mean"
+                             )
+
+# Log variables
+# Higher order variables
+# Factorized variables
+# Dummy variables
+
+```
+
+
+
+Define predictor sets
+```{r}
+# basic three odds
+predictors_1 <- c(basic_numeric_vars)
+
+# all variables
+predictors_2 <- colnames(data[,-c("home_win_flag", "draw_flag", "away_win_flag", "match_id")])
+
+# glmnet (elastic net penalized) based selection
+predictors_3 <- c(basic_numeric_vars_set2)
+
+# xgb based selection
+predictors_4 <- c(basic_numeric_vars_set3)
+
+# random forest based selection
+predictors_5 <- c(basic_numeric_vars_set4)
+
+```
+
+
+```{r}
+library(rstanarm)
+
+
+# Fit Bayesian logistic regression model
+stanglm_model <- stan_glm(as.formula(paste("home_win_flag ~ ", paste(predictors_3, collapse= "+"))),
+                data = data_train, family = binomial())
+
+# Summarize the posterior distribution of coefficients
+summary(stanglm_model)
+
+# Plot the posterior distribution of coefficients
+plot(stanglm_model)
+
+
+```
+
+```{r}
+predicted_stan_glm_holdout <- predict(stanglm_model, 
+                                 newdata = data_holdout)
+
+prediction_holdout_stanglm <- prediction(predicted_stan_glm_holdout, data_holdout$home_win_flag)
+auc_holdout_stanglm<- performance(prediction_holdout_stanglm, measure = "auc")@y.values[[1]]
+message(paste0("AUC on holdout set for STAN GLM: ", round(auc_holdout_stanglm, digits = 4)))
+```
+
+
+MÁSIK MÓdON
+
+```{r}
+
+# another way
+# Load required libraries
+library(caret)
+library(rstanarm)
+
+# Define custom model function
+stan_glm_model <- function(x, y, family, ...) {
+  fit <- stan_glm(x = x, y = y, family = family, ...)
+  return(fit)
+}
+
+# Add custom model to caret model list
+models <- list(stan_glm = stan_glm_model)
+
+# Define train control
+train_control <- trainControl(method = "cv", number = 10)
+
+# Define tuning grid
+tune_grid <- expand.grid(family = c("binomial", "poisson"))
+
+# Train model using caret
+fit <- train(
+  x = data_train[, c("odds_home_team_win", "odds_away_team_win")],
+  y = data_train$d_home_win_flag,
+  method = "stan_glm",
+  trControl = train_control,
+  tuneGrid = tune_grid,
+  metric = "Accuracy",
+  verbose = FALSE,
+  allowParallel = TRUE
+)
+
+# Print results
+print(fit)
+
+
+
+
+
+```
+
+```{r}
+# Define custom model using stan_glm
+stan_glm_custom <- function(x, y, wts, param, lev, last, classProbs, ...) {
+  require(rstanarm)
+  stan_glm(
+    formula = as.formula(paste0("factor(", paste(lev, collapse = "+"), ") ~ .")),
+    data = as.data.frame(cbind(y, x)),
+    weights = wts,
+    family = binomial(),
+    ...
+  )
+}
+
+# Create train control
+train_control <- trainControl(
+  method = "cv", # cross-validation
+  number = 10, # number of folds
+  savePredictions = "final", # save predictions on holdout set
+  verboseIter = TRUE # print progress
+)
+
+# Train the model
+model <- train(
+  x = data_train[, c("odds_home_team_win", "odds_away_team_win")],
+  y = factor(data_train[, "home_win_flag"]),
+  method = stan_glm_custom, # use the custom model
+  trControl = train_control,
+  tuneLength = 3 # number of hyperparameter combinations to try
+)
+
+```
+
