@@ -1,0 +1,238 @@
+---
+title: "Data Challenge competition - Football prediction"
+output: html_notebook
+time: February 2023
+author: Attila Gulyás / Team Bella Vita
+content:Aim of this code: To build a predictive models to predict the outcome of football matches using historical data.
+---
+
+Note: 
+- Data was provided by the organizer of the competition. It is found to be clean, no missing values, no duplicates.
+- There are 23 divisions and 10 seasons in the data.
+
+--------------------------------------
+BASIC SETUP
+--------------------------------------
+```{r}
+# empty memory
+rm(list=ls())
+
+# KOMMENT: install library if not exist -> megoldani majd
+
+# Load libraries
+library("tidyverse") # imap function for roc curve
+library("data.table") # to use data in an efficient way
+library("readxl") # to read xlsx data
+library("caret") # to split data into train and holdput sets
+library("dplyr") # to append commands easier
+library("ROCR") # to evaluate model performance
+library("h2o") # for autoML, java is kell hozzá
+library("xgboost") # for extreme gradient boosting model
+library("e1071") # for Naive Bayes
+library("ranger") # for RF model
+library("kernlab") # for SVM
+library("mltools") # to calculate AUC manually
+library("glmnet") # for GLMNET model
+# library(ggplot2)
+# library(ggthemes)
+# library(grid)
+# library(lattice)
+# library(glmnet)
+# library("skimr") 
+# library(gridExtra)
+
+# Set the working directory
+dir <-  "/Users/attilagulyas/Documents/GitHub/DataChallenge2023/"
+
+#location folders
+data_in <- paste0(dir,"01_raw/")
+# func <- paste0(dir, "work/") - nem használt
+output <- paste0(dir, "04_output/")
+```
+
+--------------------------------------
+LOAD DATA
+--------------------------------------
+
+```{r}
+
+data <- as.data.table(read_excel(paste0(data_in, "competition_table.xlsx")))
+
+
+# BASIC STISTICS
+message(paste0("Döntetlen aránya: ", round(sum(data$draw_flag) / nrow(data), digits = 2)))
+message(paste0("Hazai győzelem aránya: ", round(sum(data$home_win_flag) / nrow(data), digits = 2)))
+message(paste0("Vendég győzelem aránya: ", round(sum(data$away_win_flag) / nrow(data), digits = 2)))
+```
+
+--------------------------------------
+LABEL ENGINEERING
+--------------------------------------
+```{r}
+data <- data %>%
+  mutate(home_win_flag = factor(ifelse(home_win_flag == 0, "no", "yes"), levels = c("no", "yes")))
+
+data <- data %>%
+  mutate(away_win_flag = factor(ifelse(away_win_flag == 0, "no", "yes"), levels = c("no", "yes")))
+
+data <- data %>%
+  mutate(draw_flag = factor(ifelse(draw_flag == 0, "no", "yes"), levels = c("no", "yes")))
+```
+
+
+Create training set and holdout set samples
+```{r}
+set.seed(1990)
+
+# smaller than usual training set so that models run faster - megj: 70% helyett 80%-ot használok
+train_indices <- createDataPartition(data$home_win_flag, p = 0.8, list = FALSE)
+data_train <- data[train_indices, ]
+
+data_holdout <- data[-train_indices, ]
+
+dim(data_train)
+dim(data_holdout)
+```
+
+Set evaluation rules
+Megj: 10-fold CV, repeated CV is megoldás lehet, kipróbálni
+```{r}
+train_control <- trainControl(
+  method = "cv", #"repeatedcv",
+  n = 10,
+  classProbs = TRUE, 
+  summaryFunction = twoClassSummary  # necessary!
+)
+
+# MEGJ: repeated CV is egy megoldás
+
+# Define the control parameters for the train function
+# ctrl <- trainControl(method = "repeatedcv", number = 10, repeats = 3, 
+#                      classProbs = TRUE, summaryFunction = twoClassSummary)
+```
+
+Define variables
+```{r}
+# Basic numeric variables
+
+basic_numeric_vars_set1 <- c(
+  "odds_home_team_win",
+  "odds_away_team_win",
+  "odds_draw"
+) 
+
+
+```
+
+
+Define predictor sets
+```{r}
+# basic three odds
+predictors_1 <- c(basic_numeric_vars_set1)
+
+```
+
+--------------------------------------
+MODEL FOR PREDICTING HOME WIN
+--------------------------------------
+
+LOG NA lekezelése: kicsi számot hozzáadni
+Logistic regression v4 - Log transformation - NO differentiate by div
+--------------------------------------
+
+```{r}
+#  train the model
+set.seed(857)
+
+# glmnet (elastic net penalized) based selection is the best
+glm_model_home_win <- train(home_win_flag ~ log(odds_home_team_win + 0.001) + log(odds_away_team_win + 0.001) + log(odds_draw + 0.001),
+                   data = data_train[ ,colnames(data_train) %in% c("home_win_flag", predictors_1), with=FALSE],
+                   method = "glm",
+                   trControl = train_control)
+```
+
+```{r}
+# AUC on validation set
+auc_cv <- glm_model_home_win[["results"]][["ROC"]]
+message(paste0("AUC from CV: ", round(auc_cv, digits = 4)))
+ # 0.6817
+
+sensitivity_cv <- glm_model_home_win[["results"]][["Sens"]]
+message(paste0("Sensitivity from CV: ", round(sensitivity_cv, digits = 4)))
+# 0.7915
+```
+
+
+--------------------------------------
+MODEL FOR PREDICTING AWAY WIN
+--------------------------------------
+
+LOG NA lekezelése: kicsi számot hozzáadni
+Logistic regression v4 - Log transformation - NO differentiate by div
+--------------------------------------
+
+```{r}
+#  train the model
+set.seed(857)
+
+# glmnet (elastic net penalized) based selection is the best
+glm_model_away_win <- train(away_win_flag ~ log(odds_home_team_win + 0.001) + log(odds_away_team_win + 0.001) + log(odds_draw + 0.001),
+                   data = data_train[ ,colnames(data_train) %in% c("away_win_flag", predictors_1), with=FALSE],
+                   method = "glm",
+                   trControl = train_control)
+```
+
+```{r}
+# AUC on validation set
+auc_cv <- glm_model_away_win[["results"]][["ROC"]]
+message(paste0("AUC from CV: ", round(auc_cv, digits = 4)))
+ # 0.6893
+
+sensitivity_cv <- glm_model_away_win[["results"]][["Sens"]]
+message(paste0("Sensitivity from CV: ", round(sensitivity_cv, digits = 4)))
+# 0.9482
+```
+
+
+--------------------------------------
+MODEL FOR PREDICTING DRAW
+--------------------------------------
+
+LOG NA lekezelése: kicsi számot hozzáadni
+Logistic regression v4 - Log transformation - NO differentiate by div
+--------------------------------------
+
+```{r}
+#  train the model
+set.seed(857)
+
+# glmnet (elastic net penalized) based selection is the best
+glm_model_draw <- train(draw_flag ~ log(odds_home_team_win + 0.001) + log(odds_away_team_win + 0.001) + log(odds_draw + 0.001),
+                   data = data_train[ ,colnames(data_train) %in% c("draw_flag", predictors_1), with=FALSE],
+                   method = "glm",
+                   trControl = train_control)
+```
+
+```{r}
+# AUC on validation set
+auc_cv <- glm_model_draw[["results"]][["ROC"]]
+message(paste0("AUC from CV: ", round(auc_cv, digits = 4)))
+ # 0.5645
+
+sensitivity_cv <- glm_model_draw[["results"]][["Sens"]]
+message(paste0("Sensitivity from CV: ", round(sensitivity_cv, digits = 4)))
+# 0.9999
+```
+
+
+
+
+--------------------------------------
+SAVE MODELS
+--------------------------------------
+```{r}
+saveRDS(glm_model_home_win, paste0(output,"home_model.rda"))
+saveRDS(glm_model_away_win, paste0(output,"away_model.rda"))
+saveRDS(glm_model_draw, paste0(output,"draw_model.rda"))
+
+```

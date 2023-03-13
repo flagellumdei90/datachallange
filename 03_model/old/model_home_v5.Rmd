@@ -1,0 +1,1120 @@
+---
+title: "Data Challenge competition - Football prediction"
+output: html_notebook
+time: February 2023
+author: Attila Gulyás / Team Bella Vita
+content:Aim of this code: To build a predictive models to predict the outcome of football matches using historical data.
+---
+
+Note: 
+- Data was provided by the organizer of the competition. It is found to be clean, no missing values, no duplicates.
+- There are 23 divisions and 10 seasons in the data.
+
+
+BASIC SETUP
+```{r}
+# empty memory
+rm(list=ls())
+
+# KOMMENT: install library if not exist -> megoldani majd
+
+# Load libraries
+library("tidyverse") # imap function for roc curve
+library("data.table") # to use data in an efficient way
+library("readxl") # to read xlsx data
+library("caret") # to split data into train and holdput sets
+library("dplyr") # to append commands easier
+library("ROCR") # to evaluate model performance
+library("h2o") # for autoML, java is kell hozzá
+library("xgboost") # for extreme gradient boosting model
+library("e1071") # for Naive Bayes
+library("ranger") # for RF model
+library("kernlab") # for SVM
+library("mltools") # to calculate AUC manually
+library("glmnet") # for GLMNET model
+# library(ggplot2)
+# library(ggthemes)
+# library(grid)
+# library(lattice)
+# library(glmnet)
+# library("skimr") 
+# library(gridExtra)
+
+# Set the working directory
+dir <-  "/Users/attilagulyas/Documents/GitHub/DataChallenge2023/"
+
+#location folders
+data_in <- paste0(dir,"01_raw/")
+# func <- paste0(dir, "work/") - nem használt
+output <- paste0(dir, "04_output/")
+```
+
+LOAD DATA
+```{r}
+data <- as.data.table(read_excel(paste0(data_in, "competition_table.xlsx")))
+
+
+# BASIC STISTICS
+message(paste0("Döntetlen aránya: ", round(sum(data$draw_flag) / nrow(data), digits = 2)))
+message(paste0("Hazai győzelem aránya: ", round(sum(data$home_win_flag) / nrow(data), digits = 2)))
+message(paste0("Vendég győzelem aránya: ", round(sum(data$away_win_flag) / nrow(data), digits = 2)))
+```
+
+LABEL ENGINEERING
+```{r}
+data <- data %>%
+  mutate(home_win_flag = factor(ifelse(home_win_flag == 0, "no", "yes"), levels = c("no", "yes")))
+
+data <- data %>%
+  mutate(away_win_flag = factor(ifelse(away_win_flag == 0, "no", "yes"), levels = c("no", "yes")))
+
+data <- data %>%
+  mutate(draw_flag = factor(ifelse(draw_flag == 0, "no", "yes"), levels = c("no", "yes")))
+```
+
+
+FEATURE ENGINEERING
+```{r}
+# data structure
+# str(data)
+data <- data %>% mutate(
+        # hazai csapat támadás erőssége előző meccsen 
+        home_goal_per_shot_roll1 = home_team_goal_roll1_sum / home_team_shot_roll1_sum,
+        home_goal_per_shotontarget_roll1 = home_team_goal_roll1_sum / home_team_shot_on_target_roll1_sum,
+        home_shotontarget_per_shots_roll1 = home_team_shot_on_target_roll1_sum / home_team_shot_roll1_sum,
+        # hazai csapat támadás erőssége előző 4 meccsen 
+        home_goal_per_shot_roll4 = home_team_goal_roll4_sum / home_team_shot_roll4_sum,
+        home_goal_per_shotontarget_roll4 = home_team_goal_roll4_sum / home_team_shot_on_target_roll4_sum,
+        home_shotontarget_per_shots_roll4 = home_team_shot_on_target_roll4_sum / home_team_shot_roll4_sum,
+        # vendég csapat támadás erőssége előző meccsen 
+        away_goal_per_shot_roll1 = away_team_goal_roll1_sum / away_team_shot_roll1_sum,
+        away_goal_per_shotontarget_roll1 = away_team_goal_roll1_sum / away_team_shot_on_target_roll1_sum,
+        away_shotontarget_per_shots_roll1 = away_team_shot_on_target_roll1_sum / away_team_shot_roll1_sum,
+        # vendég csapat támadás erőssége előző 4 meccsen 
+        away_goal_per_shot_roll4 = away_team_goal_roll4_sum / away_team_shot_roll4_sum,
+        away_goal_per_shotontarget_roll4 = away_team_goal_roll4_sum / away_team_shot_on_target_roll4_sum,
+        away_shotontarget_per_shots_roll4 = away_team_shot_on_target_roll4_sum / away_team_shot_roll4_sum,
+        
+        # hazai csapat védekezés erőssége előző meccsen 
+        home_opponents_goal_per_shot_roll1 = 
+          home_team_opponents_goal_roll1_sum / home_team_opponents_shot_roll1_sum,
+        home_opponents_goal_per_shotontarget_roll1 = 
+          home_team_opponents_goal_roll1_sum /     home_team_opponents_shot_on_target_roll1_sum,
+        home_opponents_shotontarget_per_shots_roll1 = 
+          home_team_opponents_shot_on_target_roll1_sum / home_team_opponents_shot_roll1_sum,
+        
+        # hazai csapat védekezés erőssége előző 4 meccsen 
+        home_opponents_goal_per_shot_roll4 = 
+          home_team_opponents_goal_roll4_sum / home_team_opponents_shot_roll4_sum,
+        home_opponents_goal_per_shotontarget_roll4 = 
+          home_team_opponents_goal_roll4_sum /     home_team_opponents_shot_on_target_roll4_sum,
+        home_opponents_shotontarget_per_shots_roll4 = 
+          home_team_opponents_shot_on_target_roll4_sum / home_team_opponents_shot_roll4_sum,
+        
+        # vendég csapat védekezés erőssége előző meccsen 
+        away_opponents_goal_per_shot_roll1 = 
+          away_team_opponents_goal_roll1_sum / away_team_opponents_shot_roll1_sum,
+        away_opponents_goal_per_shotontarget_roll1 = 
+          away_team_opponents_goal_roll1_sum /     away_team_opponents_shot_on_target_roll1_sum,
+        away_opponents_shotontarget_per_shots_roll1 = 
+          away_team_opponents_shot_on_target_roll1_sum / away_team_opponents_shot_roll1_sum,
+        
+        # vendég csapat védekezés erőssége előző 4 meccsen 
+        away_opponents_goal_per_shot_roll4 = 
+          away_team_opponents_goal_roll4_sum / away_team_opponents_shot_roll4_sum,
+        away_opponents_goal_per_shotontarget_roll4 = 
+          away_team_opponents_goal_roll4_sum /     away_team_opponents_shot_on_target_roll4_sum,
+        away_opponents_shotontarget_per_shots_roll4 = 
+          away_team_opponents_shot_on_target_roll4_sum / away_team_opponents_shot_roll4_sum
+)
+
+
+# nullás osztás miatti hibás értékek javítása
+data[,168:191] <- lapply(data[,168:191], function(x) {x[is.infinite(x)] <- 0; return(x)}) %>% as.data.table()
+data[,168:191] <- lapply(data[,168:191], function(x) {x[is.na(x)] <- 0; return(x)}) %>% as.data.table()
+```
+
+
+--------------------------------------
+MODEL FOR PREDICTING HOME WIN
+--------------------------------------
+
+Create training set and holdout set samples
+Megj: 80%os trainingsettel is kipróbálni!
+```{r}
+set.seed(1990)
+
+# smaller than usual training set so that models run faster
+train_indices <- createDataPartition(data$home_win_flag, p = 0.7, list = FALSE)
+data_train <- data[train_indices, ]
+
+data_holdout <- data[-train_indices, ]
+
+dim(data_train)
+dim(data_holdout)
+```
+
+Set evaluation rules
+Megj: 10-fold CV, repeated CV is megoldás lehet, kipróbálni
+```{r}
+train_control <- trainControl(
+  method = "cv", 
+  n = 5,
+  classProbs = TRUE, 
+  summaryFunction = twoClassSummary  # necessary!
+)
+
+# MEGJ: repeated CV is egy megoldás
+
+# Define the control parameters for the train function
+# ctrl <- trainControl(method = "repeatedcv", number = 10, repeats = 3, 
+#                      classProbs = TRUE, summaryFunction = twoClassSummary)
+```
+
+Define variables
+```{r}
+# Basic numeric variables
+basic_numeric_vars <- c(
+  "odds_home_team_win",
+  "odds_away_team_win",
+  "odds_draw"
+) 
+
+# glmnet (elastic net penalized) based selection
+basic_numeric_vars_set2 <- c("odds_away_team_win", 
+                             "odds_home_team_win", 
+                             
+                             "home_team_expected_point_roll4_sum",
+                              "away_team_expected_point_roll4_sum",
+                              "away_team_expected_point_roll3_sum",
+                              "away_team_expected_point_mean", 
+                              
+                              "home_team_corner_roll4_sum", # ?
+                              "home_team_corner_roll3_sum", # ?
+                              "home_team_corner_roll2_sum", # ?
+                              "away_team_opponents_corner_roll4_sum", # ?
+                              "home_team_opponents_corner_roll2_sum", # ?
+                              
+                              "home_team_shot_roll2_sum", # ?
+                              "away_team_opponents_shot_roll1_sum",  # ?
+                              "away_team_opponents_shot_roll4_sum", # ?
+                              "away_team_opponents_shot_roll3_sum", # ?
+                              
+                              "away_team_opponents_shot_on_target_roll4_sum",
+                             )
+
+# xgb based selection
+basic_numeric_vars_set3 <- c("odds_away_team_win", 
+                             "odds_home_team_win", 
+                             "odds_draw",
+                             
+                             "odds_home_team_defeat_roll4_mean",
+                             "odds_home_team_defeat_roll3_mean", # human input
+                             "odds_home_team_defeat_roll2_mean",
+                             
+                             "odds_away_team_defeat_roll4_mean",
+                             "odds_away_team_defeat_roll3_mean", # human input
+                             "odds_away_team_defeat_roll2_mean", # human input
+                             
+                             "odds_away_team_win_roll4_mean",                  
+                             "odds_away_team_win_roll3_mean",
+                             
+                             "odds_home_team_win_roll4_mean", # human input
+                             "odds_home_team_win_roll3_mean",
+
+                              "odds_home_team_draw_roll4_mean",
+                             "odds_home_team_draw_roll3_mean", # human input
+                             "odds_away_team_draw_roll4_mean", # human input
+                             "odds_away_team_draw_roll3_mean",
+
+                              "away_team_expected_point_mean", 
+                             "home_team_expected_point_mean", # human input
+                              "home_team_corner_roll3_sum", # ?
+                              "away_team_corner_roll2_sum", # ?
+                              "away_team_opponents_corner_roll4_sum", # ?
+
+                             "home_team_shot_roll2_sum", # ?
+                             "home_team_shot_roll4_sum", # ?
+                             "home_shotontarget_per_shots_roll4",
+                             "away_team_opponents_shot_roll4_sum", # ?
+                             "away_team_opponents_shot_on_target_roll3_sum"
+
+                             )
+
+# rnadom forest based selection
+basic_numeric_vars_set4 <- c("odds_away_team_win", 
+                             "odds_home_team_win", 
+                             "odds_draw",
+                             "odds_home_team_defeat_roll4_mean",
+                             "odds_home_team_defeat_roll3_mean",
+                             "odds_home_team_defeat_roll2_mean",
+                             "odds_away_team_defeat_roll1_mean",
+                             
+                             "odds_away_team_defeat_roll4_mean",
+                             "odds_away_team_defeat_roll3_mean",
+                             "odds_away_team_defeat_roll2_mean",
+                             
+                             "odds_home_team_win_roll4_mean",
+                             "odds_home_team_win_roll3_mean",
+                             "odds_home_team_win_roll2_mean",
+                             
+                             "odds_away_team_win_roll4_mean",
+                             "odds_away_team_win_roll3_mean",
+                             "odds_away_team_win_roll2_mean",
+                             
+                             "odds_away_team_draw_roll4_mean",
+                             
+                             "home_team_expected_point_roll4_sum",
+                             "away_team_expected_point_roll4_sum",  # human input
+                             "away_team_expected_point_mean", 
+                             "home_team_expected_point_mean",
+                             )
+
+# Log variables
+# Higher order variables
+# Factorized variables
+# Dummy variables
+
+```
+
+
+
+Define predictor sets
+```{r}
+# basic three odds
+predictors_1 <- c(basic_numeric_vars)
+
+# all variables
+predictors_2 <- colnames(data[,-c("home_win_flag", "draw_flag", "away_win_flag", "match_id")])
+
+# glmnet (elastic net penalized) based selection
+predictors_3 <- c(basic_numeric_vars_set2)
+
+# xgb based selection
+predictors_4 <- c(basic_numeric_vars_set3)
+
+# random forest based selection
+predictors_5 <- c(basic_numeric_vars_set4)
+
+```
+
+--------------------------------------
+MODELLEK:
+--------------------------------------
+
+
+AutoML model: baseline model
+--------------------------------------
+```{r}
+
+h2o.init()
+data_train_h2o <- as.h2o(data_train[,-c("away_win_flag", "draw_flag")])
+
+# Define the target variable
+target <- "home_win_flag"
+
+# Split data into training and validation sets
+splits <- h2o.splitFrame(data_train_h2o, ratios = 0.8, seed = 1234)
+train <- splits[[1]]
+valid <- splits[[2]]
+
+set.seed(857)
+# Run AutoML for 20 base models
+aml = h2o.automl(x = predictors_3, y = target,
+                 training_frame = train,
+                 validation_frame = valid,
+                 max_models = 20,
+                 seed = 1,
+                 max_runtime_secs = 20
+)
+
+# AutoML Leaderboard
+lb = aml@leaderboard
+lb
+
+# close h2o connection
+h2o.shutdown(prompt = F)
+```
+
+
+Logistic regression
+--------------------------------------
+megj: a változószelekción még dolgozni kell: 1) domain knowledge
+```{r}
+#  train the model
+set.seed(857)
+
+glm_model <- train(home_win_flag ~ .,
+                   data = data_train[ ,colnames(data_train) %in% c("home_win_flag", predictors_1), with=FALSE],
+                   method = "glm",
+                   trControl = train_control)
+```
+
+```{r}
+# model summary
+summary(glm_model)
+```
+
+```{r}
+# AUC on validation set
+auc_cv <- glm_model[["results"]][["ROC"]]
+message(paste0("AUC from CV: ", round(auc_cv, digits = 4)))
+```
+
+```{r}
+# variable importance
+varimp <- varImp(glm_model)
+plot(varImp(glm_model))
+```
+
+
+GLMNET model (Reguralized logistic regression)
+--------------------------------------
+```{r}
+#  train the model
+set.seed(857)
+
+tune_grid_glmnet <- expand.grid(
+               alpha = 0.9, #seq(from = 0, to = 1, by = 0.1), #ridge: 0, lasso: 1, elastic net: [0,1]
+               lambda = 0.01 # seq(0.0001, 1, length = 100)
+)
+
+glmnet_model <- train(home_win_flag ~ .,
+                   data = data_train[ ,colnames(data_train) %in% c("home_win_flag", predictors_2), with=FALSE],
+                   method = "glmnet",
+                   trControl = train_control,
+                   tuneGrid = tune_grid_glmnet)
+```
+
+```{r}
+# find the best parameters
+
+best_lambda<- glmnet_model$bestTune$lambda
+message(paste0(" best lambda: ", round(best_lambda, digits = 4)))
+
+best_alpha<- glmnet_model$bestTune$alpha
+message(paste0(" best alpha: ", round(best_alpha, digits = 4)))
+
+```
+
+
+```{r}
+# AUC on validation set
+auc_cv <- glmnet_model[["results"]][["ROC"]]
+message(paste0("AUC from CV: ", round(auc_cv, digits = 4)))
+```
+
+
+```{r}
+# model summary
+# summary(glmnet_model)
+```
+
+
+```{r}
+# variable importance
+varimp <- varImp(glmnet_model)
+plot(varImp(glmnet_model))
+varimp
+```
+
+Extreme Gradient Boosting
+--------------------------------------
+```{r}
+#  train the model
+set.seed(19900829)
+tune_grid_xgb <- expand.grid(
+  nrounds = 100, #(10, 100),  # this is n_estimators in python code
+  max_depth = 3, #c(3,10),
+  colsample_bytree = 0.8, # seq(0.5, 0.9, length.out = 5),
+  ## The values below are default values in the sklearn-api. 
+  eta = 0.01, #c(0.01, 0.3),
+  gamma= 10, #c(0,10),
+  min_child_weight = 10, #c(1, 10),
+  subsample = 1 #c(0.5, 1)
+)
+
+
+xgb_model <- train(
+  home_win_flag ~ .,
+  data = data_train[ ,colnames(data_train) %in% c("home_win_flag", predictors_2), with=FALSE],
+  tuneLength = 1,
+  method = 'xgbTree',
+  na.action = na.omit,
+  # importance = 'permutation',
+  # mtry: cannot be more than the number of predictors 
+  tuneGrid = tune_grid_xgb,
+  trControl = train_control)
+
+```
+```{r}
+# find the best parameters
+best_nrounds <- xgb_model$bestTune$nrounds
+message(paste0(" best nrounds: ", round(best_nrounds, digits = 4)))
+
+best_max_depth <- xgb_model$bestTune$max_depth 
+message(paste0(" best max_depth : ", round(best_max_depth, digits = 4)))
+
+best_colsample_bytree <- xgb_model$bestTune$colsample_bytree 
+message(paste0(" best colsample_bytree : ", round(best_colsample_bytree, digits = 4)))
+
+best_eta <- xgb_model$bestTune$eta 
+message(paste0(" best eta : ", round(best_eta, digits = 4)))
+
+best_gamma<- xgb_model$bestTune$gamma 
+message(paste0(" best gamma : ", round(best_gamma, digits = 4)))
+
+best_min_child_weight<- xgb_model$bestTune$min_child_weight 
+message(paste0(" best min_child_weight : ", round(best_min_child_weight, digits = 4)))
+
+best_subsample<- xgb_model$bestTune$subsample 
+message(paste0(" best subsample : ", round(best_subsample, digits = 4)))
+```
+
+```{r}
+# AUC on validation set
+auc_cv <- xgb_model[["results"]][["ROC"]]
+message(paste0("AUC from CV: ", round(auc_cv, digits = 4)))
+# 0.6819
+```
+
+```{r}
+# model summary
+# summary(xgb_model)
+```
+
+```{r}
+# variable importance
+varimp <- varImp(xgb_model)
+plot(varImp(xgb_model))
+varimp
+```
+
+
+A celebrated implementation of the gradient boosting idea. 
+Both xgboost and gbm follows the principle of gradient boosting. There are however, the difference in modeling details. Specifically, xgboost used a more regularized model formalization to control over-fitting, which gives it better performance.
+
+
+"Simple" Gradient Boosting Machine
+--------------------------------------
+```{r}
+#  train the model
+set.seed(19900829)
+tune_grid_gbm <- expand.grid(n.trees = 200, #c(100, 200), 
+                        interaction.depth = 5, #c(5, 10), 
+                        shrinkage = 0.01, #c(0.005, 0.01, 0.1),
+                        n.minobsinnode = 50)#c(5, 50))
+
+gbm_model <- train(home_win_flag ~ .,
+                   data = data_train[ ,colnames(data_train) %in% c("home_win_flag", predictors_2), with=FALSE], 
+                   method = "gbm",
+                   trControl = train_control,
+                   tuneGrid = tune_grid_gbm,
+                   bag.fraction = 0.8,
+                   verbose = FALSE # gbm by default prints too much output
+)
+
+```
+
+```{r}
+# find the best parameters
+best_n.trees <- gbm_model$bestTune$n.trees
+message(paste0(" best n.trees: ", round(best_n.trees, digits = 4)))
+
+best_interaction.depth <- gbm_model$bestTune$interaction.depth
+message(paste0(" best interaction.depth: ", round(best_interaction.depth, digits = 4)))
+
+best_shrinkage <- gbm_model$bestTune$shrinkage
+message(paste0(" best shrinkage: ", round(best_shrinkage, digits = 4)))
+
+best_n.minobsinnode <- gbm_model$bestTune$n.minobsinnode
+message(paste0(" best n.minobsinnode: ", round(best_n.minobsinnode, digits = 4)))
+```
+
+
+```{r}
+# AUC on validation set
+auc_cv <- gbm_model[["results"]][["ROC"]]
+message(paste0("AUC from CV: ", round(auc_cv, digits = 4)))
+
+# 0.6819
+```
+
+
+```{r}
+# model summary
+# summary(gbm_model)
+```
+
+```{r}
+# varimp <- varImp(gbm_model)
+# plot(varImp(gbm_model))
+```
+
+
+Naive Bayes
+--------------------------------------
+```{r}
+#  train the model
+set.seed(19900829)
+
+nb_model <- train(home_win_flag ~ .,
+                  data = data_train[ ,colnames(data_train) %in% c("home_win_flag", predictors_2), with=FALSE],
+                  method = "naive_bayes",
+                  trControl = train_control, verbose = FALSE)
+```
+
+
+```{r}
+# model summary
+summary(nb_model)
+```
+
+```{r}
+# AUC on validation set
+auc_cv <- nb_model[["results"]][["ROC"]]
+message(paste0("AUC from CV: ", round(auc_cv, digits = 4)))
+```
+
+```{r}
+varimp <- varImp(nb_model)
+plot(varImp(nb_model))
+```
+
+
+Random Forest
+--------------------------------------
+```{r}
+#  train the model
+set.seed(19900829)
+tune_grid_rf <- expand.grid(
+  .mtry = 20, #c(3,10,20),
+  .splitrule = "gini", # variance
+  .min.node.size = 500 #c(5, 500) # 1 % of training set
+)
+
+
+rf_model <- train(
+  home_win_flag ~ .,
+  data = data_train[ ,colnames(data_train) %in% c("home_win_flag", predictors_2), with=FALSE],
+  tuneLength = 1,
+  method = 'ranger',
+  na.action = na.omit,
+  importance = 'permutation',
+  # mtry: cannot be more than the number of predictors 
+  tuneGrid = tune_grid_rf,
+  trControl = train_control)
+```
+
+
+
+```{r}
+# find the best parameters
+best_mtry <- rf_model$bestTune$mtry
+message(paste0(" best mtry: ", round(best_mtry, digits = 4)))
+
+best_min.node.size<- rf_model$bestTune$min.node.size
+message(paste0(" best min.node.size: ", round(best_min.node.size, digits = 4)))
+
+
+```
+
+
+```{r}
+# AUC on validation set
+auc_cv <- rf_model[["results"]][["ROC"]]
+message(paste0("AUC from CV: ", round(auc_cv, digits = 4)))
+```
+
+```{r}
+# model summary
+summary(rf_model)
+```
+
+```{r}
+varimp <- varImp(rf_model)
+plot(varImp(rf_model))
+varimp
+```
+
+
+
+SVM
+--------------------------------------
+```{r}
+#  train the model
+set.seed(19900829)
+tune_grid_svm <- expand.grid(
+  .C = 0.01 #c(0.001, 0.01, 0.1, 1)
+)
+
+
+svm_model <- train(
+  home_win_flag ~ .,
+  data = data_train[ ,colnames(data_train) %in% c("home_win_flag", predictors_3), with=FALSE],
+  tuneLength = 1,
+  method = 'svmLinear',
+  na.action = na.omit,
+  importance = 'permutation',
+  # mtry: cannot be more than the number of predictors 
+  tuneGrid = tune_grid_svm,
+  trControl = train_control)
+```
+
+
+```{r}
+# find the best parameters
+best_C<- svm_model$bestTune$C
+message(paste0(" best C: ", round(best_C, digits = 4)))
+```
+
+
+```{r}
+# model summary
+summary(svm_model)
+```
+
+```{r}
+# AUC on validation set
+auc_cv <- svm_model[["results"]][["ROC"]]
+message(paste0("AUC from CV: ", round(auc_cv, digits = 4)))
+```
+
+```{r}
+varimp <- varImp(svm_model)
+plot(varImp(svm_model))
+```
+
+
+K-Nearest Neighbours
+--------------------------------------
+```{r}
+#  train the model
+set.seed(19900829)
+tune_grid_knn <- expand.grid(
+  .k= 10 #c(5, 10)
+)
+
+
+knn_model <- train(
+  home_win_flag ~ .,
+  data = data_train[ ,colnames(data_train) %in% c("home_win_flag", predictors_1), with=FALSE],
+  tuneLength = 1,
+  method = 'knn',
+  na.action = na.omit,
+  # importance = 'permutation',
+  # mtry: cannot be more than the number of predictors 
+  tuneGrid = tune_grid_knn,
+  trControl = train_control)
+```
+
+```{r}
+# find the best parameters
+best_k<- knn_model$bestTune$k
+message(paste0(" best k: ", round(best_k, digits = 4)))
+```
+
+
+```{r}
+# find the best parameters
+# library(class)
+# x <- data_train[,c(predictors_1), with = FALSE]
+# y <- data_train[,"home_win_flag"]
+# 
+# 
+# # Tune k-NN model using cross-validation
+# knn_tune <- tune.knn(x, y, k = 1:2, tunecontrol = tune.control(sampling = "cross"))
+# 
+# print(knn_tune)
+```
+
+
+```{r}
+# model summary
+summary(knn_model)
+```
+
+```{r}
+# AUC on validation set
+auc_cv <- knn_model[["results"]][["ROC"]]
+message(paste0("AUC from CV: ", round(auc_cv, digits = 4)))
+```
+
+```{r}
+varimp <- varImp(knn_model)
+plot(varImp(knn_model))
+```
+
+ENSEMBLED MODEL
+--------------------------------------
+```{r}
+h2o.init()
+data_train_h2o <- as.h2o(data_train[,-c("away_win_flag", "draw_flag")])
+
+# Identify predictors and response
+y <- "home_win_flag"
+x <- predictors_2
+
+# Train & Cross-validate a GBM
+my_gbm <- h2o.gbm(x = x,
+                  y = y,
+                  training_frame = data_train_h2o,
+                  nfolds = 5,
+                  keep_cross_validation_predictions = TRUE,
+                  seed = 5)
+
+# Train & Cross-validate a RF
+my_rf <- h2o.randomForest(x = x,
+                          y = y,
+                          training_frame = data_train_h2o,
+                          nfolds = 5,
+                          keep_cross_validation_predictions = TRUE,
+                          seed = 5)
+# Train & Cross-validate a LR
+my_lr <- h2o.glm(x = x,
+                 y = y,
+                 training_frame = data_train_h2o,
+                 family = c("binomial"),
+                 nfolds = 5,
+                 keep_cross_validation_predictions = TRUE,
+                 seed = 5)
+# Train a stacked random forest ensemble using the GBM, RF and LR above
+ensemble <- h2o.stackedEnsemble(x = x,
+                                y = y,
+                                metalearner_algorithm="drf",
+                                training_frame = data_train_h2o,
+                                base_models = list(my_gbm, my_rf, my_lr))
+```
+
+```{r}
+# model summary
+summary(ensemble)
+```
+
+
+--------------------------------------
+EVALUATION: Compare random forests models based on VALIDATION sets 
+--------------------------------------
+```{r}
+
+results <- resamples(
+  list(
+    #model_1 = aml,
+    GLM = glm_model,
+    GLMNET = glmnet_model,
+    XGB = xgb_model,
+    GMB = gbm_model,
+    NB = nb_model,
+    RF = rf_model,
+    SVM = svm_model,
+    KNN = knn_model
+    #model_9 = ensemble
+  )
+)
+summary(results)
+```
+
+--------------------------------------
+EVALUATION: Compare random forests models based on TEST set
+--------------------------------------
+
+Logistic regression
+```{r}
+# AUC on holdout set
+predicted_glm_holdout <- predict(glm_model, 
+                                 newdata = data_holdout, 
+                                 type = "prob")[["yes"]]
+
+
+prediction_holdout_glm <- prediction(predicted_glm_holdout, data_holdout$home_win_flag)
+auc_holdout_glm <- performance(prediction_holdout_glm, measure = "auc")@y.values[[1]]
+message(paste0("AUC on holdout set for GLM: ", round(auc_holdout_glm, digits = 4)))
+```
+
+GLMNET
+```{r}
+# AUC on holdout set
+predicted_glmnet_holdout <- predict(glmnet_model, 
+                                 newdata = data_holdout, 
+                                 type = "prob")[["yes"]]
+
+
+prediction_holdout_glmnet <- prediction(predicted_glmnet_holdout, data_holdout$home_win_flag)
+auc_holdout_glmnet <- performance(prediction_holdout_glmnet, measure = "auc")@y.values[[1]]
+message(paste0("AUC on holdout set for GLM Net: ", round(auc_holdout_glmnet, digits = 4)))
+```
+
+Random forest
+```{r}
+# AUC on holdout set
+predicted_rf_holdout <- predict(rf_model, 
+                         newdata = data_holdout, 
+                         type = "prob")[["yes"]]
+
+
+prediction_holdout_rf <- prediction(predicted_rf_holdout, data_holdout$home_win_flag)
+auc_holdout_rf <- performance(prediction_holdout_rf, measure = "auc")@y.values[[1]]
+message(paste0("AUC on holdout set for RF: ", round(auc_holdout_rf, digits = 4)))
+```
+
+XGBoosting
+```{r}
+# AUC on holdout set
+predicted_xgb_holdout <- predict(xgb_model, 
+                         newdata = data_holdout, 
+                         type = "prob")[["yes"]]
+
+
+prediction_holdout_xgb <- prediction(predicted_xgb_holdout, data_holdout$home_win_flag)
+auc_holdout_xgb <- performance(prediction_holdout_xgb, measure = "auc")@y.values[[1]]
+message(paste0("AUC on holdout set for XGB: ", round(auc_holdout_xgb, digits = 4)))
+```
+
+Gradient Boosting Machine
+```{r}
+# AUC on holdout set
+predicted_gbm_holdout <- predict(gbm_model, 
+                         newdata = data_holdout, 
+                         type = "prob")[["yes"]]
+
+
+prediction_holdout_gbm <- prediction(predicted_gbm_holdout, data_holdout$home_win_flag)
+auc_holdout_gbm <- performance(prediction_holdout_gbm, measure = "auc")@y.values[[1]]
+message(paste0("AUC on holdout set for GBM: ", round(auc_holdout_gbm, digits = 4)))
+```
+
+Naive Bayes
+```{r}
+# AUC on holdout set
+predicted_nb_holdout <- predict(nb_model, 
+                         newdata = data_holdout, 
+                         type = "prob")[["yes"]]
+
+
+prediction_holdout_nb <- prediction(predicted_nb_holdout, data_holdout$home_win_flag)
+auc_holdout_nb <- performance(prediction_holdout_nb, measure = "auc")@y.values[[1]]
+message(paste0("AUC on holdout set for NB: ", round(auc_holdout_nb, digits = 4)))
+```
+
+SVM
+```{r}
+# AUC on holdout set
+predicted_svm_holdout <- predict(svm_model, 
+                         newdata = data_holdout, 
+                         type = "prob")[["yes"]]
+
+
+prediction_holdout_svm <- prediction(predicted_svm_holdout, data_holdout$home_win_flag)
+auc_holdout_svm <- performance(prediction_holdout_svm, measure = "auc")@y.values[[1]]
+message(paste0("AUC on holdout set for SVM: ", round(auc_holdout_svm, digits = 4)))
+```
+
+KNN
+```{r}
+# AUC on holdout set
+predicted_knn_holdout <- predict(knn_model, 
+                         newdata = data_holdout, 
+                         type = "prob")[["yes"]]
+
+
+prediction_holdout_knn <- prediction(predicted_knn_holdout, data_holdout$home_win_flag)
+auc_holdout_knn <- performance(prediction_holdout_knn, measure = "auc")@y.values[[1]]
+message(paste0("AUC on holdout set for KNN: ", round(auc_holdout_knn, digits = 4)))
+```
+
+ODDS based probability
+--------------------------------------
+```{r}
+data_holdout[,.prob_home_win_odds_based := 1/(1+odds_home_team_win)]
+data_holdout[,.prob_draw_odds_based := 1/(1+odds_draw)]
+data_holdout[,.prob_away_win_odds_based := 1/(1+odds_away_team_win)]
+
+data_holdout[,.prob_sum_odds_based := .prob_home_win_odds_based + .prob_draw_odds_based + .prob_away_win_odds_based]
+
+data_holdout[,.prob_home_win_odds_based_adj := .prob_home_win_odds_based / .prob_sum_odds_based]
+data_holdout[,.prob_draw_odds_based_adj := .prob_draw_odds_based / .prob_sum_odds_based]
+data_holdout[,.prob_away_win_odds_based_adj := .prob_away_win_odds_based / .prob_sum_odds_based]
+
+```
+
+
+Bayes Logistic Regression
+--------------------------------------
+```{r}
+# library("rjags")
+# library("runjags")
+# 
+# # Jags code to fit the model to the simulated data
+# model_code = '
+# model
+# {
+#   # Likelihood
+#   for (t in 1:T) {
+#     y[t] ~ dbin(p[t], K)
+#     logit(p[t]) <- alpha + beta_1 * x_1[t]
+#   }
+# 
+#   # Priors
+#   alpha ~ dnorm(0.0,0.01)
+#   beta_1 ~ dnorm(0.0,0.01)
+# }
+# '
+# 
+# # Set up the data
+# model_data = list(T = T, y = data_train$home_win_flag, x_1 = data_train$odds_home_team_win_roll4_mean)
+# 
+# 
+# # Choose the parameters to watch
+# model_parameters =  c("alpha", "beta_1", "beta_2")
+# 
+# # Run the model
+# model_run = jags(data = model_data,
+#                  parameters.to.save = model_parameters,
+#                  model.file = textConnection(model_code),
+#                  n.chains = 4,
+#                  n.iter = 1000,
+#                  n.burnin = 200,
+#                  n.thin = 2)
+```
+
+
+
+COLLECT PREDICTIONS INTO A OUTPUT TABLE
+```{r}
+predcition_lists <-c("GLM" = prediction_holdout_glm@predictions,
+                     "GLMNET" = prediction_holdout_glmnet@predictions,
+                     "GBM" = prediction_holdout_gbm@predictions,
+                     "XGB" = prediction_holdout_xgb@predictions,
+                     "RF" = prediction_holdout_rf@predictions,
+                     "NB" = prediction_holdout_nb@predictions,
+                     "KNN" = prediction_holdout_knn@predictions,
+                     "SVM" = prediction_holdout_svm@predictions)
+prediction_table <-data.table(do.call(cbind, predcition_lists))
+
+# model average
+prediction_table$mean = (prediction_table$GLM + prediction_table$GLMNET +prediction_table$GBM + prediction_table$XGB + prediction_table$RF + prediction_table$NB + prediction_table$KNN + prediction_table$SVM ) / 8
+
+# odds based
+prediction_table$odds_based <- data_holdout$.prob_home_win_odds_based_adj
+
+# Results - fact
+prediction_table$actual <- data_holdout$home_win_flag
+```
+
+```{r}
+# Calculate AUC manually
+
+auc_holdout_mean <- auc_roc(preds = prediction_table$mean, actuals = ordered(prediction_table$actual))
+auc_holdout_oddsbased<- auc_roc(preds = prediction_table$odds_based, actuals = ordered(prediction_table$actual))
+
+message(paste0("AUC on holdout set for Mean Model: ", round(auc_holdout_mean, digits = 4)))
+message(paste0("AUC on holdout set for ODDS based Model: ", round(auc_holdout_oddsbased, digits = 4)))
+
+```
+
+ROC curve on the TEST set 
+```{r}
+
+roc_df_logit_rf <- imap(list("random forest" = rf_model, 
+                             "GLM Net" = glmnet_model,
+                             "GLM" = glm_model,
+                             "GBM" = gbm_model,
+                             "XGB" = xgb_model,
+                             "NB" = nb_model,
+                             "KNN" = knn_model,
+                             "SVM" = svm_model
+                             ), ~ {
+  model <- .x
+  predicted_probabilities <- predict(model, newdata = data_holdout, type = "prob")
+  rocr_prediction <- prediction(predicted_probabilities[["yes"]], data_holdout[["home_win_flag"]]) 
+  
+  tpr_fpr_performance <- performance(rocr_prediction, "tpr", "fpr")
+  tibble(
+    model = .y,
+    FPR = tpr_fpr_performance@x.values[[1]],
+    TPR = tpr_fpr_performance@y.values[[1]],
+    cutoff = tpr_fpr_performance@alpha.values[[1]]
+  )  
+}) %>% bind_rows()
+
+ggplot(roc_df_logit_rf) +
+  geom_line(aes(FPR, TPR, color = model), size = 1) +
+  geom_abline(intercept = 0, slope = 1,  linetype = "dotted", col = "black") +
+  scale_y_continuous(limits = c(0, 1), breaks = seq(0, 1, .1)) +
+  scale_x_continuous(limits = c(0, 1), breaks = seq(0, 1, .1)) +
+  xlab("False Positive Rate") + ylab("True Positive Rate") +
+  ggtitle("ROC curve, calculated on the test set")
+
+```
+
+SAVE MODELS
+```{r}
+saveRDS(rf_model, paste0(output,"home_model_rf.rda"))
+saveRDS(glm_model, paste0(output,"home_model_glm.rda"))
+saveRDS(glmnet_model, paste0(output,"home_model_glmnet.rda"))
+saveRDS(gbm_model, paste0(output,"home_model_gbm.rda"))
+saveRDS(xgb_model, paste0(output,"home_model_xgb.rda"))
+saveRDS(nb_model, paste0(output,"home_model_nb.rda"))
+saveRDS(knn_model, paste0(output,"home_model_knn.rda"))
+saveRDS(svm_model, paste0(output,"home_model_svm.rda"))
+```
+
+LOAD MODELS
+```{r}
+home_model_rf <- readRDS(paste0(output,"home_model_rf.rda"))
+home_model_glm <- readRDS(paste0(output,"home_model_glm.rda"))
+home_model_gbm <- readRDS(paste0(output,"home_model_gbm.rda"))
+home_model_xgb <- readRDS(paste0(output,"home_model_xgb.rda"))
+home_model_nb <- readRDS(paste0(output,"home_model_nb.rda"))
+home_model_knn <- readRDS(paste0(output,"home_model_knn.rda"))
+home_model_svm <- readRDS(paste0(output,"home_model_svm.rda"))
+```
+
+
+
+TRY LOADED MODEL
+```{r}
+# AUC on holdout set
+predicted_proba_holdout <- predict(home_model_rf, 
+                         newdata = data_holdout, 
+                         type = "prob")[["yes"]]
+
+
+prediction_holdout_proba <- prediction(predicted_proba_holdout, data_holdout$home_win_flag)
+auc_holdout_proba <- performance(prediction_holdout_proba, measure = "auc")@y.values[[1]]
+message(paste0("AUC on holdout set for RF: ", round(auc_holdout_proba, digits = 4)))
+```
+
+
+CALIBRATION TEST
+```{r}
+# calibration plot: how well do estimated vs actual event probabilities relate to each other?
+# -------------------------------------------------
+actual_vs_predicted_rf1 <- data.frame(
+  actual = ifelse(data_holdout[["home_win_flag"]] == "yes", 1, 0),
+  predicted = predicted_rf1_holdout
+)
+
+# order observations accordingly
+
+num_groups <- 10
+
+calibration_logit <- actual_vs_predicted_rf1 %>% 
+  # ntile: assign group ids based on a variable. similar to "cut".
+  mutate(predicted_score_group = ntile(predicted, num_groups)) %>% 
+  group_by(predicted_score_group) %>% 
+  summarise(mean_actual = mean(actual), mean_predicted = mean(predicted), num_obs = n())
+
+ggplot(calibration_logit,aes(x = mean_actual, y = mean_predicted)) +
+  geom_point() +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
+  labs(x = "Actual event probability", y = "Predicted event probability") +
+  ylim(0, 1) + xlim(0, 1)
+
+
+# the Brier score: MSE applied to classification evaluation
+
+brier <- RMSE(actual_vs_predicted_rf1[["predicted"]], actual_vs_predicted_rf1[["actual"]])^2
+message(paste0("Brier score: ", round(brier, digits = 4)))
+```
+

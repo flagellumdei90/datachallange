@@ -1,0 +1,892 @@
+---
+title: "Data Challenge competition - Football prediction"
+output: html_notebook
+time: February 2023
+author: Attila Gulyás / Team Bella Vita
+content:Aim of this code: To build a predictive models to predict the outcome of football matches using historical data.
+---
+
+Note: 
+- Data was provided by the organizer of the competition. It is found to be clean, no missing values, no duplicates.
+- There are 23 divisions and 10 seasons in the data.
+
+--------------------------------------
+BASIC SETUP
+--------------------------------------
+```{r}
+# empty memory
+rm(list=ls())
+
+# KOMMENT: install library if not exist -> megoldani majd
+
+# Load libraries
+library("tidyverse") # imap function for roc curve
+library("data.table") # to use data in an efficient way
+library("readxl") # to read xlsx data
+library("caret") # to split data into train and holdput sets
+library("dplyr") # to append commands easier
+library("ROCR") # to evaluate model performance
+library("h2o") # for autoML, java is kell hozzá
+library("xgboost") # for extreme gradient boosting model
+library("e1071") # for Naive Bayes
+library("ranger") # for RF model
+library("kernlab") # for SVM
+library("mltools") # to calculate AUC manually
+library("glmnet") # for GLMNET model
+# library(ggplot2)
+# library(ggthemes)
+# library(grid)
+# library(lattice)
+# library(glmnet)
+# library("skimr") 
+# library(gridExtra)
+
+# Set the working directory
+dir <-  "/Users/attilagulyas/Documents/GitHub/DataChallenge2023/"
+
+#location folders
+data_in <- paste0(dir,"01_raw/")
+# func <- paste0(dir, "work/") - nem használt
+output <- paste0(dir, "04_output/")
+```
+--------------------------------------
+LOAD DATA
+--------------------------------------
+
+```{r}
+
+data <- as.data.table(read_excel(paste0(data_in, "competition_table.xlsx")))
+
+
+# BASIC STISTICS
+message(paste0("Döntetlen aránya: ", round(sum(data$draw_flag) / nrow(data), digits = 2)))
+message(paste0("Hazai győzelem aránya: ", round(sum(data$home_win_flag) / nrow(data), digits = 2)))
+message(paste0("Vendég győzelem aránya: ", round(sum(data$away_win_flag) / nrow(data), digits = 2)))
+```
+
+--------------------------------------
+LABEL ENGINEERING
+--------------------------------------
+```{r}
+data <- data %>%
+  mutate(home_win_flag = factor(ifelse(home_win_flag == 0, "no", "yes"), levels = c("no", "yes")))
+
+data <- data %>%
+  mutate(away_win_flag = factor(ifelse(away_win_flag == 0, "no", "yes"), levels = c("no", "yes")))
+
+data <- data %>%
+  mutate(draw_flag = factor(ifelse(draw_flag == 0, "no", "yes"), levels = c("no", "yes")))
+```
+
+--------------------------------------
+FEATURE ENGINEERING
+--------------------------------------
+```{r}
+# data structure
+# str(data)
+# data <- data %>% mutate(
+#         # hazai csapat támadás erőssége előző meccsen 
+#         home_goal_per_shot_roll1 = home_team_goal_roll1_sum / home_team_shot_roll1_sum,
+#         home_goal_per_shotontarget_roll1 = home_team_goal_roll1_sum / home_team_shot_on_target_roll1_sum,
+#         home_shotontarget_per_shots_roll1 = home_team_shot_on_target_roll1_sum / home_team_shot_roll1_sum,
+#         # hazai csapat támadás erőssége előző 4 meccsen 
+#         home_goal_per_shot_roll4 = home_team_goal_roll4_sum / home_team_shot_roll4_sum,
+#         home_goal_per_shotontarget_roll4 = home_team_goal_roll4_sum / home_team_shot_on_target_roll4_sum,
+#         home_shotontarget_per_shots_roll4 = home_team_shot_on_target_roll4_sum / home_team_shot_roll4_sum,
+#         # vendég csapat támadás erőssége előző meccsen 
+#         away_goal_per_shot_roll1 = away_team_goal_roll1_sum / away_team_shot_roll1_sum,
+#         away_goal_per_shotontarget_roll1 = away_team_goal_roll1_sum / away_team_shot_on_target_roll1_sum,
+#         away_shotontarget_per_shots_roll1 = away_team_shot_on_target_roll1_sum / away_team_shot_roll1_sum,
+#         # vendég csapat támadás erőssége előző 4 meccsen 
+#         away_goal_per_shot_roll4 = away_team_goal_roll4_sum / away_team_shot_roll4_sum,
+#         away_goal_per_shotontarget_roll4 = away_team_goal_roll4_sum / away_team_shot_on_target_roll4_sum,
+#         away_shotontarget_per_shots_roll4 = away_team_shot_on_target_roll4_sum / away_team_shot_roll4_sum,
+#         
+#         # hazai csapat védekezés erőssége előző meccsen 
+#         home_opponents_goal_per_shot_roll1 = 
+#           home_team_opponents_goal_roll1_sum / home_team_opponents_shot_roll1_sum,
+#         home_opponents_goal_per_shotontarget_roll1 = 
+#           home_team_opponents_goal_roll1_sum /     home_team_opponents_shot_on_target_roll1_sum,
+#         home_opponents_shotontarget_per_shots_roll1 = 
+#           home_team_opponents_shot_on_target_roll1_sum / home_team_opponents_shot_roll1_sum,
+#         
+#         # hazai csapat védekezés erőssége előző 4 meccsen 
+#         home_opponents_goal_per_shot_roll4 = 
+#           home_team_opponents_goal_roll4_sum / home_team_opponents_shot_roll4_sum,
+#         home_opponents_goal_per_shotontarget_roll4 = 
+#           home_team_opponents_goal_roll4_sum /     home_team_opponents_shot_on_target_roll4_sum,
+#         home_opponents_shotontarget_per_shots_roll4 = 
+#           home_team_opponents_shot_on_target_roll4_sum / home_team_opponents_shot_roll4_sum,
+#         
+#         # vendég csapat védekezés erőssége előző meccsen 
+#         away_opponents_goal_per_shot_roll1 = 
+#           away_team_opponents_goal_roll1_sum / away_team_opponents_shot_roll1_sum,
+#         away_opponents_goal_per_shotontarget_roll1 = 
+#           away_team_opponents_goal_roll1_sum /     away_team_opponents_shot_on_target_roll1_sum,
+#         away_opponents_shotontarget_per_shots_roll1 = 
+#           away_team_opponents_shot_on_target_roll1_sum / away_team_opponents_shot_roll1_sum,
+#         
+#         # vendég csapat védekezés erőssége előző 4 meccsen 
+#         away_opponents_goal_per_shot_roll4 = 
+#           away_team_opponents_goal_roll4_sum / away_team_opponents_shot_roll4_sum,
+#         away_opponents_goal_per_shotontarget_roll4 = 
+#           away_team_opponents_goal_roll4_sum /     away_team_opponents_shot_on_target_roll4_sum,
+#         away_opponents_shotontarget_per_shots_roll4 = 
+#           away_team_opponents_shot_on_target_roll4_sum / away_team_opponents_shot_roll4_sum
+# )
+# 
+# 
+# # nullás osztás miatti hibás értékek javítása
+# data[,168:191] <- lapply(data[,168:191], function(x) {x[is.infinite(x)] <- 0; return(x)}) %>% as.data.table()
+# data[,168:191] <- lapply(data[,168:191], function(x) {x[is.na(x)] <- 0; return(x)}) %>% as.data.table()
+```
+
+
+--------------------------------------
+MODEL FOR PREDICTING HOME WIN
+--------------------------------------
+
+Create training set and holdout set samples
+```{r}
+set.seed(1990)
+
+# smaller than usual training set so that models run faster - megj: 70% helyett 80%-ot használok
+train_indices <- createDataPartition(data$home_win_flag, p = 0.8, list = FALSE)
+data_train <- data[train_indices, ]
+
+data_holdout <- data[-train_indices, ]
+
+dim(data_train)
+dim(data_holdout)
+```
+
+Set evaluation rules
+Megj: 10-fold CV, repeated CV is megoldás lehet, kipróbálni
+```{r}
+train_control <- trainControl(
+  method = "cv", #"repeatedcv",
+  n = 10,
+  classProbs = TRUE, 
+  summaryFunction = twoClassSummary  # necessary!
+)
+
+# MEGJ: repeated CV is egy megoldás
+
+# Define the control parameters for the train function
+# ctrl <- trainControl(method = "repeatedcv", number = 10, repeats = 3, 
+#                      classProbs = TRUE, summaryFunction = twoClassSummary)
+```
+
+Define variables
+```{r}
+# Basic numeric variables
+
+basic_numeric_vars_set1 <- c(
+  "odds_home_team_win",
+  "odds_away_team_win",
+  "odds_draw"
+) 
+
+
+```
+
+
+
+Define predictor sets
+```{r}
+# basic three odds
+predictors_1 <- c(basic_numeric_vars_set1)
+
+```
+
+--------------------------------------
+MODELLEK:
+--------------------------------------
+
+Logistic regression v1 - NO transformation
+--------------------------------------
+
+```{r}
+#  train the model
+set.seed(857)
+
+# glmnet (elastic net penalized) based selection is the best
+glm_model1 <- train(home_win_flag ~ .,
+                   data = data_train[ ,colnames(data_train) %in% c("home_win_flag", predictors_0), with=FALSE],
+                   method = "glm",
+                   trControl = train_control)
+```
+
+```{r}
+# model summary
+# summary(glm_model1)
+```
+
+```{r}
+# AUC on validation set
+auc_cv <- glm_model1[["results"]][["ROC"]]
+message(paste0("AUC from CV: ", round(auc_cv, digits = 4)))
+ # 0.6813
+
+sensitivity_cv <- glm_model1[["results"]][["Sens"]]
+message(paste0("Sensitivity from CV: ", round(sensitivity_cv, digits = 4)))
+# 0.819
+```
+
+```{r}
+# variable importance
+varimp <- varImp(glm_model)
+plot(varImp(glm_model))
+```
+
+
+Logistic regression v2 - NO transformation - with div differentiation
+--------------------------------------
+
+```{r}
+#  train the model
+set.seed(857)
+
+# glmnet (elastic net penalized) based selection is the best
+glm_model2 <- train(home_win_flag ~ odds_home_team_win * div,
+                   data = data_train[ ,colnames(data_train) %in% c("home_win_flag", predictors_1, "div"), with=FALSE],
+                   method = "glm",
+                   trControl = train_control)
+```
+
+
+```{r}
+# AUC on validation set
+auc_cv <- glm_model2[["results"]][["ROC"]]
+message(paste0("AUC from CV: ", round(auc_cv, digits = 4)))
+ # 0.6779
+
+sensitivity_cv <- glm_model2[["results"]][["Sens"]]
+message(paste0("Sensitivity from CV: ", round(sensitivity_cv, digits = 4)))
+# 0.7195
+
+```
+Rosszabb mnint a div nélküli.
+
+LOG NA lekezelése: kicsi számot hozzáadni
+Logistic regression v3 - Log transformation - differentiate by div
+--------------------------------------
+
+```{r}
+#  train the model
+set.seed(857)
+
+# glmnet (elastic net penalized) based selection is the best
+glm_model3 <- train(home_win_flag ~ log(odds_home_team_win ) * div + log(odds_away_team_win + 0.001) * div + log(odds_draw + 0.001) * div,
+                   data = data_train[ ,colnames(data_train) %in% c("home_win_flag", predictors_1, "div"), with=FALSE],
+                   method = "glm",
+                   trControl = train_control)
+```
+
+
+```{r}
+# AUC on validation set
+auc_cv <- glm_model3[["results"]][["ROC"]]
+message(paste0("AUC from CV: ", round(auc_cv, digits = 4)))
+ # 0.6804
+
+sensitivity_cv <- glm_model3[["results"]][["Sens"]]
+message(paste0("Sensitivity from CV: ", round(sensitivity_cv, digits = 4)))
+# 0.7843
+```
+Picit rosszabb mint az sima modell. Egész jó.
+
+
+LOG NA lekezelése: kicsi számot hozzáadni
+Logistic regression v4 - Log transformation - NO differentiate by div
+--------------------------------------
+
+```{r}
+#  train the model
+set.seed(857)
+
+# glmnet (elastic net penalized) based selection is the best
+glm_model4 <- train(home_win_flag ~ log(odds_home_team_win + 0.001) + log(odds_away_team_win + 0.001) + log(odds_draw + 0.001),
+                   data = data_train[ ,colnames(data_train) %in% c("home_win_flag", predictors_1), with=FALSE],
+                   method = "glm",
+                   trControl = train_control)
+```
+
+```{r}
+# AUC on validation set
+auc_cv <- glm_model4[["results"]][["ROC"]]
+message(paste0("AUC from CV: ", round(auc_cv, digits = 4)))
+ # 0.6817
+
+sensitivity_cv <- glm_model4[["results"]][["Sens"]]
+message(paste0("Sensitivity from CV: ", round(sensitivity_cv, digits = 4)))
+# 0.7915
+```
+Eddig a legjobb modell.
+
+
+
+Logistic regression v5 - Probability transformation - NO differentiate by div
+--------------------------------------
+
+Calculate probabilities
+```{r}
+data_train[,odds_home_team_win_p := 1/(1+odds_home_team_win)]
+data_train[,odds_away_team_win_p := 1/(1+odds_away_team_win)]
+data_train[,odds_draw_p := 1/(1+odds_draw)]
+```
+
+```{r}
+#  train the model
+set.seed(857)
+
+# glmnet (elastic net penalized) based selection is the best
+glm_model5 <- train(home_win_flag ~ odds_home_team_win_p + odds_away_team_win_p + odds_draw_p,
+                   data = data_train[ ,colnames(data_train) %in% c("home_win_flag", "odds_home_team_win_p", "odds_away_team_win_p", "odds_draw_p"), with=FALSE],
+                   method = "glm",
+                   trControl = train_control)
+```
+
+
+```{r}
+# AUC on validation set
+auc_cv <- glm_model5[["results"]][["ROC"]]
+message(paste0("AUC from CV: ", round(auc_cv, digits = 4)))
+ # 0.6817
+
+sensitivity_cv <- glm_model5[["results"]][["Sens"]]
+message(paste0("Sensitivity from CV: ", round(sensitivity_cv, digits = 4)))
+# 0.774
+```
+Eddig a legjobb modell.
+
+
+Logistic regression v6 - Probability transformation - with differentiation by div
+--------------------------------------
+
+Calculate probabilities
+```{r}
+data_train[,odds_home_team_win_p := 1/(1+odds_home_team_win)]
+data_train[,odds_away_team_win_p := 1/(1+odds_away_team_win)]
+data_train[,odds_draw_p := 1/(1+odds_draw)]
+```
+
+```{r}
+#  train the model
+set.seed(857)
+
+# glmnet (elastic net penalized) based selection is the best
+glm_model6 <- train(home_win_flag ~ odds_home_team_win_p * div + odds_away_team_win_p * div + odds_draw_p * div,
+                   data = data_train[ ,colnames(data_train) %in% c("home_win_flag", "odds_home_team_win_p", "odds_away_team_win_p", "odds_draw_p", "div"), with=FALSE],
+                   method = "glm",
+                   trControl = train_control)
+```
+
+
+```{r}
+# AUC on validation set
+auc_cv <- glm_model6[["results"]][["ROC"]]
+message(paste0("AUC from CV: ", round(auc_cv, digits = 4)))
+ # 0.6803
+
+sensitivity_cv <- glm_model6[["results"]][["Sens"]]
+message(paste0("Sensitivity from CV: ", round(sensitivity_cv, digits = 4)))
+# 0.774
+```
+GYengébb mint div-vel.
+
+
+
+Logistic regression v7 - z-score transformation - with NO differentiation by div
+--------------------------------------
+
+Calculate z-scores
+```{r}
+# data_train$odds_home_team_win_z <- 0
+# 
+# for(i in 1:nrow(data_train)){
+#   s_div <- data_train[i,]$div
+#   
+#   mean_odds_home_team_win <- mean(data_train[div == s_div,]$odds_home_team_win)
+#   sd_odds_home_team_win <- sd(data_train[div == s_div,]$odds_home_team_win, na.rm = T)
+#   
+# data_train[i,"odds_home_team_win_z"] <- (data_train[i,"odds_home_team_win"] - mean_odds_home_team_win) / sd_odds_home_team_win
+# 
+# }
+
+
+mean_odds_home_team_win <- mean(data_train$odds_home_team_win)
+sd_odds_home_team_win <- sd(data_train$odds_home_team_win)
+data_train$odds_home_team_win_z <-  - (data_train$odds_home_team_win - mean_odds_home_team_win) / sd_odds_home_team_win
+
+mean_odds_away_team_win <- mean(data_train$odds_away_team_win)
+sd_odds_away_team_win <- sd(data_train$odds_away_team_win)
+data_train$odds_away_team_win_z <-  - (data_train$odds_away_team_win - mean_odds_away_team_win) / sd_odds_away_team_win
+
+
+mean_odds_draw <- mean(data_train$odds_draw)
+sd_odds_draw <- sd(data_train$odds_draw)
+data_train$odds_draw_z <-  - (data_train$odds_draw - mean_odds_draw) / sd_odds_draw
+```
+
+```{r}
+#  train the model
+set.seed(857)
+
+# glmnet (elastic net penalized) based selection is the best
+glm_model7 <- train(home_win_flag ~ odds_home_team_win_z + odds_away_team_win_z + odds_draw_z,
+                   data = data_train[ ,colnames(data_train) %in% c("home_win_flag", "odds_home_team_win_z", "odds_away_team_win_z", "odds_draw_z"), with=FALSE],
+                   method = "glm",
+                   trControl = train_control)
+```
+
+
+```{r}
+# AUC on validation set
+auc_cv <- glm_model7[["results"]][["ROC"]]
+message(paste0("AUC from CV: ", round(auc_cv, digits = 4)))
+ # 0.6817
+
+sensitivity_cv <- glm_model7[["results"]][["Sens"]]
+message(paste0("Sensitivity from CV: ", round(sensitivity_cv, digits = 4)))
+# 0.8174
+```
+
+
+
+
+
+--------------------------------------
+EVALUATION: Compare random forests models based on TEST set
+--------------------------------------
+
+Logistic regression - v1
+```{r}
+# AUC on holdout set
+predicted_glm1_holdout <- predict(glm_model1, 
+                                 newdata = data_holdout, 
+                                 type = "prob")[["yes"]]
+
+
+prediction_holdout_glm1 <- prediction(predicted_glm1_holdout, data_holdout$home_win_flag)
+auc_holdout_glm1 <- performance(prediction_holdout_glm1, measure = "auc")@y.values[[1]]
+message(paste0("AUC on holdout set for GLM1: ", round(auc_holdout_glm1, digits = 4)))
+
+```
+
+Logistic regression - v2
+```{r}
+# AUC on holdout set
+predicted_glm2_holdout <- predict(glm_model2, 
+                                 newdata = data_holdout, 
+                                 type = "prob")[["yes"]]
+
+
+prediction_holdout_glm2 <- prediction(predicted_glm2_holdout, data_holdout$home_win_flag)
+auc_holdout_glm2 <- performance(prediction_holdout_glm2, measure = "auc")@y.values[[1]]
+message(paste0("AUC on holdout set for GLM2: ", round(auc_holdout_glm2, digits = 4)))
+
+```
+
+Logistic regression - v3 ERROR???
+```{r}
+# AUC on holdout set
+predicted_glm3_holdout <- predict(glm_model3, 
+                                 newdata = data_holdout, 
+                                 type = "prob")[["yes"]]
+
+
+prediction_holdout_glm3 <- prediction(predicted_glm3_holdout, data_holdout$home_win_flag)
+auc_holdout_glm3 <- performance(prediction_holdout_glm3, measure = "auc")@y.values[[1]]
+message(paste0("AUC on holdout set for GLM3: ", round(auc_holdout_glm3, digits = 4)))
+
+```
+
+Logistic regression - v4
+```{r}
+# AUC on holdout set
+predicted_glm4_holdout <- predict(glm_model4, 
+                                 newdata = data_holdout, 
+                                 type = "prob")[["yes"]]
+
+
+prediction_holdout_glm4 <- prediction(predicted_glm4_holdout, data_holdout$home_win_flag)
+auc_holdout_glm4 <- performance(prediction_holdout_glm4, measure = "auc")@y.values[[1]]
+message(paste0("AUC on holdout set for GLM4: ", round(auc_holdout_glm4, digits = 4)))
+
+```
+
+
+Logistic regression - v5
+```{r}
+
+data_holdout[,odds_home_team_win_p := 1/(1+odds_home_team_win)]
+data_holdout[,odds_away_team_win_p := 1/(1+odds_away_team_win)]
+data_holdout[,odds_draw_p := 1/(1+odds_draw)]
+
+# AUC on holdout set
+predicted_glm5_holdout <- predict(glm_model5, 
+                                 newdata = data_holdout, 
+                                 type = "prob")[["yes"]]
+
+
+prediction_holdout_glm5 <- prediction(predicted_glm5_holdout, data_holdout$home_win_flag)
+auc_holdout_glm5 <- performance(prediction_holdout_glm5, measure = "auc")@y.values[[1]]
+message(paste0("AUC on holdout set for GLM5: ", round(auc_holdout_glm5, digits = 4)))
+
+```
+
+
+Logistic regression - v6
+```{r}
+
+data_holdout[,odds_home_team_win_p := 1/(1+odds_home_team_win)]
+data_holdout[,odds_away_team_win_p := 1/(1+odds_away_team_win)]
+data_holdout[,odds_draw_p := 1/(1+odds_draw)]
+
+# AUC on holdout set
+predicted_glm6_holdout <- predict(glm_model6, 
+                                 newdata = data_holdout, 
+                                 type = "prob")[["yes"]]
+
+
+prediction_holdout_glm6 <- prediction(predicted_glm6_holdout, data_holdout$home_win_flag)
+auc_holdout_glm6 <- performance(prediction_holdout_glm6, measure = "auc")@y.values[[1]]
+message(paste0("AUC on holdout set for GLM5: ", round(auc_holdout_glm6, digits = 4)))
+
+```
+
+
+
+Logistic regression - v7
+```{r}
+
+mean_odds_home_team_win <- mean(data_holdout$odds_home_team_win)
+sd_odds_home_team_win <- sd(data_holdout$odds_home_team_win)
+data_holdout$odds_home_team_win_z <-  - (data_holdout$odds_home_team_win - mean_odds_home_team_win) / sd_odds_home_team_win
+
+mean_odds_away_team_win <- mean(data_holdout$odds_away_team_win)
+sd_odds_away_team_win <- sd(data_holdout$odds_away_team_win)
+data_holdout$odds_away_team_win_z <-  - (data_holdout$odds_away_team_win - mean_odds_away_team_win) / sd_odds_away_team_win
+
+
+mean_odds_draw <- mean(data_holdout$odds_draw)
+sd_odds_draw <- sd(data_holdout$odds_draw)
+data_holdout$odds_draw_z <-  - (data_holdout$odds_draw - mean_odds_draw) / sd_odds_draw
+
+
+
+# AUC on holdout set
+predicted_glm7_holdout <- predict(glm_model7, 
+                                 newdata = data_holdout, 
+                                 type = "prob")[["yes"]]
+
+
+prediction_holdout_glm7 <- prediction(predicted_glm7_holdout, data_holdout$home_win_flag)
+auc_holdout_glm7 <- performance(prediction_holdout_glm7, measure = "auc")@y.values[[1]]
+message(paste0("AUC on holdout set for GLM7: ", round(auc_holdout_glm7, digits = 4)))
+
+```
+
+
+COLLECT PREDICTIONS INTO A OUTPUT TABLE
+```{r}
+predcition_lists <-c("GLM1" = prediction_holdout_glm1@predictions,
+                     "GLM2" = prediction_holdout_glm2@predictions,
+                     # "GLM3" = prediction_holdout_glm3@predictions,
+                     "GLM4" = prediction_holdout_glm4@predictions,
+                     "GLM5" = prediction_holdout_glm5@predictions,
+                     "GLM6" = prediction_holdout_glm6@predictions,
+                     "GLM7" = prediction_holdout_glm7@predictions)
+prediction_table <-data.table(do.call(cbind, predcition_lists))
+
+# ensembled : model average
+prediction_table$ensemble1 = (prediction_table$GLM4 + prediction_table$GLM5) / 2
+prediction_table$ensemble2 = (prediction_table$GLM4 + prediction_table$GLM5 + prediction_table$GLM1) / 3
+
+# Results - fact
+prediction_table$actual <- data_holdout$home_win_flag
+```
+
+```{r}
+# Calculate AUC manually
+
+auc_holdout_ensemble1<- auc_roc(preds = prediction_table$ensemble1, actuals = ordered(prediction_table$actual))
+auc_holdout_ensemble2<- auc_roc(preds = prediction_table$ensemble2, actuals = ordered(prediction_table$actual))
+
+
+message(paste0("AUC on holdout set for ensemble1 Model: ", round(auc_holdout_ensemble1, digits = 4)))
+message(paste0("AUC on holdout set for ensemble2 Model: ", round(auc_holdout_ensemble2, digits = 4)))
+
+
+```
+
+ROC curve on the TEST set 
+```{r}
+
+roc_df_logit_rf <- imap(list("GLM1" = glm_model1, 
+"GLM2" = glm_model2, 
+# "GLM3" = glm_model3, 
+"GLM4" = glm_model4, 
+"GLM5" = glm_model5, 
+"GLM6" = glm_model6, 
+"GLM7" = glm_model7
+ ), ~ {
+  model <- .x
+  predicted_probabilities <- predict(model, newdata = data_holdout, type = "prob")
+  rocr_prediction <- prediction(predicted_probabilities[["yes"]], data_holdout[["home_win_flag"]]) 
+  
+  tpr_fpr_performance <- performance(rocr_prediction, "tpr", "fpr")
+  tibble(
+    model = .y,
+    FPR = tpr_fpr_performance@x.values[[1]],
+    TPR = tpr_fpr_performance@y.values[[1]],
+    cutoff = tpr_fpr_performance@alpha.values[[1]]
+  )  
+}) %>% bind_rows()
+
+ggplot(roc_df_logit_rf) +
+  geom_line(aes(FPR, TPR, color = model), size = 1) +
+  geom_abline(intercept = 0, slope = 1,  linetype = "dotted", col = "black") +
+  scale_y_continuous(limits = c(0, 1), breaks = seq(0, 1, .1)) +
+  scale_x_continuous(limits = c(0, 1), breaks = seq(0, 1, .1)) +
+  xlab("False Positive Rate") + ylab("True Positive Rate") +
+  ggtitle("ROC curve, calculated on the test set")
+
+```
+
+
+--------------------------------------
+SAVE MODELS
+--------------------------------------
+```{r}
+saveRDS(rf_model, paste0(output,"home_model_rf.rda"))
+saveRDS(glm_model, paste0(output,"home_model_glm.rda"))
+saveRDS(bayesglm_model, paste0(output,"home_model_bayesglm.rda"))
+saveRDS(glmnet_model, paste0(output,"home_model_glmnet.rda"))
+saveRDS(gbm_model, paste0(output,"home_model_gbm.rda"))
+saveRDS(xgb_model, paste0(output,"home_model_xgb.rda"))
+saveRDS(nb_model, paste0(output,"home_model_nb.rda"))
+saveRDS(knn_model, paste0(output,"home_model_knn.rda"))
+saveRDS(svm_model, paste0(output,"home_model_svm.rda"))
+```
+
+LOAD MODELS
+```{r}
+rf_model <- readRDS(paste0(output,"home_model_rf.rda"))
+glm_model <- readRDS(paste0(output,"home_model_glm.rda"))
+gbm_model <- readRDS(paste0(output,"home_model_gbm.rda"))
+xgb_model <- readRDS(paste0(output,"home_model_xgb.rda"))
+nb_model <- readRDS(paste0(output,"home_model_nb.rda"))
+knn_model <- readRDS(paste0(output,"home_model_knn.rda"))
+svm_model <- readRDS(paste0(output,"home_model_svm.rda"))
+```
+
+
+--------------------------------------
+CALIBRATION TEST
+--------------------------------------
+
+1. CALIBRATION TEST - Logistic Regression v1
+```{r}
+# calibration plot: how well do estimated vs actual event probabilities relate to each other?
+# -------------------------------------------------
+actual_vs_predicted_glm<- data.frame(
+  actual = ifelse(data_holdout[["home_win_flag"]] == "yes", 1, 0),
+  predicted = predicted_glm1_holdout
+)
+
+# order observations accordingly
+
+num_groups <- 10
+
+calibration_logit <- actual_vs_predicted_glm %>% 
+  # ntile: assign group ids based on a variable. similar to "cut".
+  mutate(predicted_score_group = ntile(predicted, num_groups)) %>% 
+  group_by(predicted_score_group) %>% 
+  summarise(mean_actual = mean(actual), mean_predicted = mean(predicted), num_obs = n())
+
+ggplot(calibration_logit,aes(x = mean_actual, y = mean_predicted)) +
+  geom_point() +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
+  labs(x = "Actual event probability", y = "Predicted event probability") +
+  ylim(0, 1) + xlim(0, 1)
+
+
+# the Brier score: MSE applied to classification evaluation
+
+brier <- RMSE(actual_vs_predicted_glm[["predicted"]], actual_vs_predicted_glm[["actual"]])^2
+message(paste0("Brier score: ", round(brier, digits = 4)))
+```
+
+2. CALIBRATION TEST - Logistic Regression v2
+```{r}
+# calibration plot: how well do estimated vs actual event probabilities relate to each other?
+# -------------------------------------------------
+actual_vs_predicted_glm<- data.frame(
+  actual = ifelse(data_holdout[["home_win_flag"]] == "yes", 1, 0),
+  predicted = predicted_glm2_holdout
+)
+
+# order observations accordingly
+
+num_groups <- 10
+
+calibration_logit <- actual_vs_predicted_glm %>% 
+  # ntile: assign group ids based on a variable. similar to "cut".
+  mutate(predicted_score_group = ntile(predicted, num_groups)) %>% 
+  group_by(predicted_score_group) %>% 
+  summarise(mean_actual = mean(actual), mean_predicted = mean(predicted), num_obs = n())
+
+ggplot(calibration_logit,aes(x = mean_actual, y = mean_predicted)) +
+  geom_point() +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
+  labs(x = "Actual event probability", y = "Predicted event probability") +
+  ylim(0, 1) + xlim(0, 1)
+
+
+# the Brier score: MSE applied to classification evaluation
+
+brier <- RMSE(actual_vs_predicted_glm[["predicted"]], actual_vs_predicted_glm[["actual"]])^2
+message(paste0("Brier score: ", round(brier, digits = 4)))
+```
+
+
+Ez nem jól kalibrált.
+
+4. CALIBRATION TEST - Logistic Regression v4
+```{r}
+# calibration plot: how well do estimated vs actual event probabilities relate to each other?
+# -------------------------------------------------
+actual_vs_predicted_glm<- data.frame(
+  actual = ifelse(data_holdout[["home_win_flag"]] == "yes", 1, 0),
+  predicted = predicted_glm4_holdout
+)
+
+# order observations accordingly
+
+num_groups <- 10
+
+calibration_logit <- actual_vs_predicted_glm %>% 
+  # ntile: assign group ids based on a variable. similar to "cut".
+  mutate(predicted_score_group = ntile(predicted, num_groups)) %>% 
+  group_by(predicted_score_group) %>% 
+  summarise(mean_actual = mean(actual), mean_predicted = mean(predicted), num_obs = n())
+
+ggplot(calibration_logit,aes(x = mean_actual, y = mean_predicted)) +
+  geom_point() +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
+  labs(x = "Actual event probability", y = "Predicted event probability") +
+  ylim(0, 1) + xlim(0, 1)
+
+
+# the Brier score: MSE applied to classification evaluation
+
+brier <- RMSE(actual_vs_predicted_glm[["predicted"]], actual_vs_predicted_glm[["actual"]])^2
+message(paste0("Brier score: ", round(brier, digits = 4)))
+```
+Cool!
+
+
+5. CALIBRATION TEST - Logistic Regression v5
+```{r}
+# calibration plot: how well do estimated vs actual event probabilities relate to each other?
+# -------------------------------------------------
+actual_vs_predicted_glm<- data.frame(
+  actual = ifelse(data_holdout[["home_win_flag"]] == "yes", 1, 0),
+  predicted = predicted_glm5_holdout
+)
+
+# order observations accordingly
+
+num_groups <- 10
+
+calibration_logit <- actual_vs_predicted_glm %>% 
+  # ntile: assign group ids based on a variable. similar to "cut".
+  mutate(predicted_score_group = ntile(predicted, num_groups)) %>% 
+  group_by(predicted_score_group) %>% 
+  summarise(mean_actual = mean(actual), mean_predicted = mean(predicted), num_obs = n())
+
+ggplot(calibration_logit,aes(x = mean_actual, y = mean_predicted)) +
+  geom_point() +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
+  labs(x = "Actual event probability", y = "Predicted event probability") +
+  ylim(0, 1) + xlim(0, 1)
+
+
+# the Brier score: MSE applied to classification evaluation
+
+brier <- RMSE(actual_vs_predicted_glm[["predicted"]], actual_vs_predicted_glm[["actual"]])^2
+message(paste0("Brier score: ", round(brier, digits = 4)))
+```
+Cool.
+
+
+6. CALIBRATION TEST - Logistic Regression v6
+```{r}
+# calibration plot: how well do estimated vs actual event probabilities relate to each other?
+# -------------------------------------------------
+actual_vs_predicted_glm<- data.frame(
+  actual = ifelse(data_holdout[["home_win_flag"]] == "yes", 1, 0),
+  predicted = predicted_glm6_holdout
+)
+
+# order observations accordingly
+
+num_groups <- 10
+
+calibration_logit <- actual_vs_predicted_glm %>% 
+  # ntile: assign group ids based on a variable. similar to "cut".
+  mutate(predicted_score_group = ntile(predicted, num_groups)) %>% 
+  group_by(predicted_score_group) %>% 
+  summarise(mean_actual = mean(actual), mean_predicted = mean(predicted), num_obs = n())
+
+ggplot(calibration_logit,aes(x = mean_actual, y = mean_predicted)) +
+  geom_point() +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
+  labs(x = "Actual event probability", y = "Predicted event probability") +
+  ylim(0, 1) + xlim(0, 1)
+
+
+# the Brier score: MSE applied to classification evaluation
+
+brier <- RMSE(actual_vs_predicted_glm[["predicted"]], actual_vs_predicted_glm[["actual"]])^2
+message(paste0("Brier score: ", round(brier, digits = 4)))
+```
+Cool.
+
+
+7. CALIBRATION TEST - Logistic Regression v7
+```{r}
+# calibration plot: how well do estimated vs actual event probabilities relate to each other?
+# -------------------------------------------------
+actual_vs_predicted_glm<- data.frame(
+  actual = ifelse(data_holdout[["home_win_flag"]] == "yes", 1, 0),
+  predicted = predicted_glm7_holdout
+)
+
+# order observations accordingly
+
+num_groups <- 10
+
+calibration_logit <- actual_vs_predicted_glm %>% 
+  # ntile: assign group ids based on a variable. similar to "cut".
+  mutate(predicted_score_group = ntile(predicted, num_groups)) %>% 
+  group_by(predicted_score_group) %>% 
+  summarise(mean_actual = mean(actual), mean_predicted = mean(predicted), num_obs = n())
+
+ggplot(calibration_logit,aes(x = mean_actual, y = mean_predicted)) +
+  geom_point() +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
+  labs(x = "Actual event probability", y = "Predicted event probability") +
+  ylim(0, 1) + xlim(0, 1)
+
+
+# the Brier score: MSE applied to classification evaluation
+
+brier <- RMSE(actual_vs_predicted_glm[["predicted"]], actual_vs_predicted_glm[["actual"]])^2
+message(paste0("Brier score: ", round(brier, digits = 4)))
+```
+
+Good.
+
